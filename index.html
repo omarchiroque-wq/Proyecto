@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hub Comercial</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- HEADER -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="logo">
+        <div class="logo-icon">
+          <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect width="48" height="48" rx="12" fill="#1e40af"/>
+            <path d="M12 16h24M12 24h16M12 32h20" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+            <circle cx="36" cy="30" r="7" fill="#60a5fa"/>
+            <path d="M33 30l2 2 4-4" stroke="#1e3a8a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="logo-text">
+          <span class="logo-title">Hub Comercial</span>
+          <span class="logo-subtitle">Área de Ventas &amp; Comercial</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="date-display" id="dateDisplay"></div>
+        <div class="user-badge">
+          <span class="user-icon">👤</span>
+          <span>Equipo Comercial</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- SEARCH BAR -->
+  <div class="search-section">
+    <div class="search-wrapper">
+      <span class="search-icon">🔍</span>
+      <input
+        type="text"
+        id="searchInput"
+        class="search-input"
+        placeholder="Buscar módulo..."
+        onkeyup="filterCards()"
+      />
+    </div>
+  </div>
+
+  <!-- MAIN -->
+  <main class="main">
+
+    <!-- SECTION: Gestión de Clientes -->
+    <section class="category-section" data-category="clientes">
+      <div class="category-header">
+        <span class="category-icon">👥</span>
+        <h2 class="category-title">Gestión de Clientes</h2>
+      </div>
+      <div class="cards-grid">
+
+        <a href="#" class="card card--blue" data-label="Base de datos Cliente">
+          <div class="card-icon">🗄️</div>
+          <div class="card-content">
+            <span class="card-title">Base de Datos Clientes</span>
+            <span class="card-desc">Registro completo de clientes, contactos e historial</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+        <a href="#" class="card card--indigo" data-label="Ficha de Cliente">
+          <div class="card-icon">📋</div>
+          <div class="card-content">
+            <span class="card-title">Ficha de Cliente</span>
+            <span class="card-desc">Información detallada por cliente y seguimiento</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+        <a href="#" class="card card--violet" data-label="Segmentación de Clientes">
+          <div class="card-icon">🎯</div>
+          <div class="card-content">
+            <span class="card-title">Segmentación de Clientes</span>
+            <span class="card-desc">Clasificación por categoría, región y potencial</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+      </div>
+    </section>
+
+    <!-- SECTION: Ventas & Cotizaciones -->
+    <section class="category-section" data-category="ventas">
+      <div class="category-header">
+        <span class="category-icon">💼</span>
+        <h2 class="category-title">Ventas &amp; Cotizaciones</h2>
+      </div>
+      <div class="cards-grid">
+
+        <a href="#" class="card card--green" data-label="Plan de Ventas">
+          <div class="card-icon">📈</div>
+          <div class="card-content">
+            <span class="card-title">Plan de Ventas</span>
+            <span class="card-desc">Metas, proyecciones y seguimiento de objetivos</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+        <a href="#" class="card card--teal" data-label="Registro de Cotizaciones">
+          <div class="card-icon">📝</div>
+          <div class="card-content">
+            <span class="card-title">Registro de Cotizaciones</span>
+            <span class="card-desc">Historial y estado de todas las cotizaciones</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+        <a href="#" class="card card--cyan" data-label="Formato de Cotizaciones">
+          <div class="card-icon">📄</div>
+          <div class="card-content">
+            <span class="card-title">Formato de Cotizaciones</span>
+            <span class="card-desc">Plantilla oficial para generar nuevas cotizaciones</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+        <a href="#" class="card card--emerald" data-label="Comparativo de Precios">
+          <div class="card-icon">💲</div>
+          <div class="card-content">
+            <span class="card-title">Comparativo de Precios</span>
+            <span class="card-desc">Lista de precios y márgenes de negociación</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+      </div>
+    </section>
+
+    <!-- SECTION: Pedidos & Operaciones -->
+    <section class="category-section" data-category="pedidos">
+      <div class="category-header">
+        <span class="category-icon">📦</span>
+        <h2 class="category-title">Pedidos &amp; Operaciones</h2>
+      </div>
+      <div class="cards-grid">
+
+        <a href="#" class="card card--orange" data-label="Gestión de Pedidos">
+          <div class="card-icon">🛒</div>
+          <div class="card-content">
+            <span class="card-title">Gestión de Pedidos</span>
+            <span class="card-desc">Seguimiento y control de pedidos en curso</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+        <a href="#" class="card card--amber" data-label="Estado de Pedidos">
+          <div class="card-icon">🚚</div>
+          <div class="card-content">
+            <span class="card-title">Estado de Pedidos</span>
+            <span class="card-desc">Rastreo en tiempo real de despachos y entregas</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+        <a href="#" class="card card--yellow" data-label="Inventario Disponible">
+          <div class="card-icon">🏭</div>
+          <div class="card-content">
+            <span class="card-title">Inventario Disponible</span>
+            <span class="card-desc">Stock actual y disponibilidad de productos</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+      </div>
+    </section>
+
+    <!-- SECTION: Reportes & Análisis -->
+    <section class="category-section" data-category="reportes">
+      <div class="category-header">
+        <span class="category-icon">📊</span>
+        <h2 class="category-title">Reportes &amp; Análisis</h2>
+      </div>
+      <div class="cards-grid">
+
+        <a href="#" class="card card--rose" data-label="Dashboard de Ventas">
+          <div class="card-icon">📊</div>
+          <div class="card-content">
+            <span class="card-title">Dashboard de Ventas</span>
+            <span class="card-desc">Indicadores clave y métricas de rendimiento</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+        <a href="#" class="card card--pink" data-label="Reporte Mensual">
+          <div class="card-icon">📅</div>
+          <div class="card-content">
+            <span class="card-title">Reporte Mensual</span>
+            <span class="card-desc">Análisis de ventas por período y zona</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+        <a href="#" class="card card--fuchsia" data-label="Comisiones y Bonos">
+          <div class="card-icon">🏆</div>
+          <div class="card-content">
+            <span class="card-title">Comisiones y Bonos</span>
+            <span class="card-desc">Cálculo de comisiones por vendedor y meta</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+        <a href="#" class="card card--purple" data-label="Pipeline Comercial">
+          <div class="card-icon">🔄</div>
+          <div class="card-content">
+            <span class="card-title">Pipeline Comercial</span>
+            <span class="card-desc">Oportunidades en negociación y probabilidad de cierre</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+      </div>
+    </section>
+
+    <!-- SECTION: Herramientas & Recursos -->
+    <section class="category-section" data-category="herramientas">
+      <div class="category-header">
+        <span class="category-icon">🛠️</span>
+        <h2 class="category-title">Herramientas &amp; Recursos</h2>
+      </div>
+      <div class="cards-grid">
+
+        <a href="#" class="card card--slate" data-label="Calendario Comercial">
+          <div class="card-icon">🗓️</div>
+          <div class="card-content">
+            <span class="card-title">Calendario Comercial</span>
+            <span class="card-desc">Reuniones, visitas y eventos del equipo comercial</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+        <a href="#" class="card card--zinc" data-label="Catálogo de Productos">
+          <div class="card-icon">📦</div>
+          <div class="card-content">
+            <span class="card-title">Catálogo de Productos</span>
+            <span class="card-desc">Fichas técnicas, fotos y especificaciones</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+        <a href="#" class="card card--stone" data-label="Materiales de Marketing">
+          <div class="card-icon">🎨</div>
+          <div class="card-content">
+            <span class="card-title">Materiales de Marketing</span>
+            <span class="card-desc">Brochures, presentaciones y recursos visuales</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+        <a href="#" class="card card--blue-dark" data-label="Manual de Ventas">
+          <div class="card-icon">📚</div>
+          <div class="card-content">
+            <span class="card-title">Manual de Ventas</span>
+            <span class="card-desc">Políticas, procedimientos y guías del vendedor</span>
+          </div>
+          <div class="card-arrow">→</div>
+        </a>
+
+      </div>
+    </section>
+
+  </main>
+
+  <!-- NO RESULTS -->
+  <div class="no-results" id="noResults" style="display:none;">
+    <span>🔎</span>
+    <p>No se encontraron módulos con ese nombre.</p>
+  </div>
+
+  <!-- FOOTER -->
+  <footer class="footer">
+    <p>© <span id="footerYear"></span> Hub Comercial &mdash; Área Comercial &amp; Ventas</p>
+  </footer>
+
+  <!-- MODAL -->
+  <div class="modal-overlay" id="modalOverlay" onclick="closeModal()">
+    <div class="modal" onclick="event.stopPropagation()">
+      <button class="modal-close" onclick="closeModal()">✕</button>
+      <div class="modal-icon" id="modalIcon"></div>
+      <h3 class="modal-title" id="modalTitle"></h3>
+      <p class="modal-desc" id="modalDesc"></p>
+      <div class="modal-input-group">
+        <label>URL del módulo:</label>
+        <input type="url" id="modalUrl" placeholder="https://..." />
+      </div>
+      <div class="modal-actions">
+        <button class="btn-secondary" onclick="closeModal()">Cancelar</button>
+        <button class="btn-primary" onclick="saveLink()">Guardar enlace</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
