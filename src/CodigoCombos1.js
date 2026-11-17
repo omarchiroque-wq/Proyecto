@@ -1,6 +1,7 @@
 /**
  * CodigoCombos1.gs — parte 1 de 4 del JS del módulo Combos textil, en base64.
- * GENERADO: no editar a mano. La app lo descarga con getCodigoCombos() y lo ejecuta en el navegador.
+ * GENERADO: no editar a mano. Fuente: src_combos/combos.js → ./build-combos.sh
+ * La app lo descarga con getCodigoCombos() y lo ejecuta en el navegador.
  * Bytes originales: 42525 · huella: 2e517cfc9c
  */
 var COMBOS_JS_1_BYTES = 42525;
