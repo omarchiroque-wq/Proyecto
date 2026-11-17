@@ -5,8 +5,12 @@ BOM por estilo) + módulo Combos textil. Responde en español; el código y los 
 
 ## Reglas no negociables
 
+- **Antes de codificar, proponer un plan y esperar el OK de Omar.** Plan corto: qué archivos se tocan, qué cambia y el
+  riesgo principal. No editar código hasta recibir el OK explícito. Leer, buscar y correr lint/typecheck sí se puede.
 - **Nunca hacer deploy.** Prohibido `clasp deploy`, `clasp redeploy`, `clasp undeploy`, `clasp version` o crear/editar
-  implementaciones. El único comando que sube código es `clasp push` (o `npm run push`). Las implementaciones las gestiona Omar.
+  implementaciones. Las implementaciones las gestiona Omar.
+- **`clasp push` solo cuando Omar lo pida explícitamente**, y es el único comando que sube código (usar `npm run push`,
+  que verifica antes los trozos de Combos). Un OK al plan no autoriza el push.
 - **PLAN DE VENTAS es de solo lectura** (`PLAN_ID` en `src/Code.js`). Nunca escribir, borrar, formatear ni crear hojas
   en ese Spreadsheet: solo `getValues`/lecturas. Todo lo que se escribe va al Sheet propio de la app.
 - **Combos se edita solo en el fuente.** El JS de Combos vive en `src_combos/combos.js`. `src/CodigoCombos1..4.js`
@@ -47,7 +51,7 @@ npm run lint            # ESLint (no-undef lo cubre typecheck)
 npm run typecheck       # tsc sobre src/ (tipos GAS) y src_combos/ (DOM)
 npm run format:check    # Prettier, sin escribir
 ./build-combos.sh       # regenera src/CodigoCombos1..4.js
-npm run push            # build-combos --check + clasp push
+npm run push            # build-combos --check + clasp push — SOLO si Omar lo pide
 ```
 
 - `app.js`, `index.html` y `styles.css` en la raíz son el "Hub Comercial", otra app estática: no son parte del
