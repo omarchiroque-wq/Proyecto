@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* ===== Shell: cabecera + barra lateral (los módulos tienen su CSS aislado en CssAvios / CssCombos) ===== */
+:root{--navy:#082D58;--gold:#B2B021;--teal:#1A9F7F;--line:#C9D2DE;--soft:#E8EEF5;--sel:#E8EEF5;--ink:#0E1A2B;--muted:#46566C}
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0}
+body{font:14px/1.45 "IBM Plex Sans",system-ui,"Segoe UI",Roboto,Arial,sans-serif;background:#EEF2F7;color:var(--ink)}
+[hidden]{display:none!important}
+.top.shell{position:sticky;top:0;z-index:20;background:var(--navy);color:#fff;display:flex;align-items:center;gap:14px;padding:0 18px;min-height:52px}
+.shell .brand{display:flex;flex-direction:column;line-height:1.05}
+.shell .brand b{font-weight:800;font-size:16px;letter-spacing:.14em}
+.shell .brand small{font-size:10.5px;color:#C9D4E3;letter-spacing:.04em}
+.shell .navtog{background:none;border:0;color:#fff;font-size:20px;cursor:pointer;padding:4px 6px;border-radius:6px}
+.shell .navtog:hover{background:rgba(255,255,255,.1)}
+.shell .who{margin-left:auto;font-size:12px;color:#C9D4E3;display:flex;gap:14px;align-items:center}
+.sync{font-size:11.5px;font-weight:700;color:#C9D4E3}
+.sync.ok{color:#7FD8BF}.sync.run{color:var(--gold)}.sync.err{color:#FFB4A9}
+.app{display:grid;grid-template-columns:236px minmax(0,1fr);align-items:start}
+.app.navc{grid-template-columns:minmax(0,1fr)}
+.app.navc #nav{display:none}
+#nav{position:sticky;top:52px;height:calc(100vh - 52px);background:#fff;border-right:1px solid var(--line);padding:12px 10px 20px;display:flex;flex-direction:column;gap:1px;overflow:auto}
+#nav .nsec{font-size:11px;font-weight:800;color:var(--navy);letter-spacing:.07em;text-transform:uppercase;padding:14px 10px 6px;display:flex;align-items:center;gap:8px}
+#nav .nsec:first-child{padding-top:4px}
+#nav .nsec::before{content:"";width:3px;height:12px;border-radius:2px;background:var(--gold)}
+#nav button{all:unset;cursor:pointer;display:flex;gap:10px;align-items:center;padding:8px 10px;border-radius:8px;font-size:13px;font-weight:600;color:var(--ink)}
+#nav button span{font-size:10.5px;font-weight:800;color:var(--muted);min-width:24px}
+#nav button:hover{background:var(--soft)}
+#nav button[aria-current="true"]{background:var(--sel);box-shadow:inset 3px 0 0 var(--gold);color:var(--navy)}
+#nav button:focus-visible{outline:2px solid var(--gold)}
+.mainz{min-width:0}
+#avRoot,#ctRoot{min-height:calc(100vh - 52px)}
+#ctRoot{background:#F3F5F8}
+@media (max-width:900px){
+  .app{grid-template-columns:minmax(0,1fr)}
+  #nav{position:static;height:auto;flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line);padding:8px}
+  #nav .nsec{display:none}#nav button{white-space:nowrap}
+}
+@media print{
+  .top.shell,#nav{display:none!important}
+  .app{display:block}
+  body{background:#fff}
+  #avRoot,#ctRoot{background:#fff!important;min-height:0}
+}
+</style>
+<?!= include('CssAvios'); ?>
+<?!= include('CssPicker'); ?>
+</head>
+<body>
+<header class="top shell">
+  <button class="navtog" id="togNav" aria-label="Mostrar u ocultar menú">☰</button>
+  <div class="brand"><b>NUNA COTTON</b><small>Consumos y avíos · PLM · UDP</small></div>
+  <div class="who"><span class="sync" id="sync"></span><span><span id="user"></span> · <span id="ver">v4.0.0</span></span></div>
+</header>
+<div class="app" id="shell">
+  <nav id="nav" aria-label="Secciones">
+    <div class="nsec">Consumo textil</div>
+    <button data-go="ct:prg"><span>PG</span>Programas</button>
+    <button data-go="ct:tpl"><span>PE</span>Plantillas de estilos</button>
+    <button data-go="ct:art"><span>AR</span>Asignación de artes</button>
+    <div class="nsec">Avíos</div>
+    <button data-go="av:ped"><span>PE</span>Pedidos</button>
+    <button data-go="av:res"><span>RC</span>Reserva y compra</button>
+    <button data-go="av:sal"><span>SA</span>Salidas</button>
+    <button data-go="av:ing"><span>IN</span>Ingresos</button>
+    <div class="nsec">Producción</div>
+    <button data-go="ct:rep"><span>TA</span>Asignación de talleres</button>
+    <div class="nsec">Maestros</div>
+    <button data-go="ct:prn"><span>AR</span>Artes</button>
+    <button data-go="ct:tel"><span>TE</span>Telas</button>
+    <button data-go="ct:tal"><span>TA</span>Talleres</button>
+    <button data-go="av:mae"><span>AV</span>Avíos</button>
+    <button data-go="av:pla"><span>PL</span>Plantillas consumo avíos</button>
+    <button data-go="av:cfg"><span>CF</span>Configuración</button>
+  </nav>
+  <div class="mainz">
+    <div id="avRoot"><main id="app"><div class="empty">Cargando… (si demora más de 20 segundos verás el motivo aquí)</div></main></div>
+    <div id="ctRoot" hidden>
+      <main>
+        <div class="wrap" id="wrap">
+          <aside class="panel" id="side">
+            <div class="panel-h"><h2>Estilos</h2><span class="msub" id="mcount"></span><button class="x" id="togSide" aria-label="Ocultar lista de estilos" title="Ocultar">‹</button></div>
+            <div class="panel-b" style="padding-bottom:6px"><input class="search" id="q" type="search" placeholder="Buscar estilo…" aria-label="Buscar estilo"></div>
+            <div class="afil" id="afil"><label><input type="checkbox" data-afil="ap"> Aprobados <b id="n-ap"></b></label><label><input type="checkbox" data-afil="pe"> Pendientes <b id="n-pe"></b></label></div>
+            <ul class="mlist" id="mlist"></ul>
+          </aside>
+          <div id="content"><div class="empty">Cargando Combos…</div></div>
+        </div>
+      </main>
+      <datalist id="compopts"><option>TELA CUERPO A</option><option>TELA COMPLEMENTO B</option><option>TELA COMPLEMENTO C</option><option>TELA COMPLEMENTO D</option><option>FORRO</option><option>COLLARETA 3.2 CM</option><option>COLLARETA 3.5 CM</option><option>VENA 2CM</option><option>TAPETE 3 CM</option><option>RIB</option><option>SESGO</option></datalist>
+      <datalist id="colores"></datalist><datalist id="telas"></datalist><datalist id="aviopts"></datalist><datalist id="printopts"></datalist><datalist id="estopts"></datalist>
+    </div>
+  </div>
+</div>
+<div id="avHost" class="avx"></div>
+<div id="pkHost" class="ctx"></div>
+<div id="printArea"></div>
+<?!= include('JsComun'); ?>
+<?!= include('JsAvios'); ?>
+<!-- Combos (CssCombos + JsCombos1..4) se carga al entrar a una sección de Combos: la página inicial debe pesar menos de 256 KB -->
+</body>
+</html>

@@ -1,0 +1,1255 @@
+<script>
+/* ================= ALMACÉN DE AVÍOS (v3.8.0 integrado en v4.0.0) ================= */
+
+/* ================= Estado ================= */
+let A = {user:"", baseQty:"PROG", cargaCerrada:false, maestro:{familias:[],unidades:[],avios:[],marcas:[],medidas:[],skus:[]}, tallas:[], plantillas:[], pedidos:[], clientes:[]};
+let IX = {};
+let P = null;
+let view = "ped", sub = "est", selStyle = null;
+let STOCK = null, MOVS = null, expand = {}, movQ = "", movT = "", pedQ = "", pedE = "", pedS = "__ACT", maeQ = "", maeF = "";
+let listaOff = false;
+let tplMode = null, tplAll = false, plaCli = "", salDest = "", salObs = "", soloComprar = false;
+let uid = 0;
+/* "Entregado a": planta + talleres del maestro de Combos (Maestros › Talleres). Si aún no hay talleres guardados, la lista fija anterior. */
+const destinos = () => { const t = (A.talleres||[]).map(x=>x.nom).filter(Boolean); return t.length ? ["Planta Puente Piedra", ...t] : DESTINOS0; };
+const DESTINOS0 = ["Planta Puente Piedra","Taller Angel","Taller Elio","Taller Yoli","Taller Yuvica","Taller Pedro Fernández","Moda BB Kukilin (bordado)"];
+const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const r2 = n => Math.round(n*100)/100;
+const $ = id => document.getElementById(id);
+
+function run(fn, ...args){
+  busy(true);
+  return new Promise((ok, ko) => google.script.run
+    .withSuccessHandler(r => { busy(false); ok(r); })
+    .withFailureHandler(e => { busy(false); toast(e && e.message ? e.message : String(e), true); ko(e); })[fn](...args));
+}
+function busy(on){ let b = $("busy"); if(on && !b){ b = document.createElement("div"); b.id="busy"; b.className="busy"; b.innerHTML="<span>Procesando…</span>"; $("avHost").appendChild(b);} if(!on && b) b.remove(); }
+/* Diálogo de confirmación con el estilo de la app (reemplaza el confirm del navegador) */
+/* Ingreso rápido de un SKU desde Reserva y compra. Devuelve {cant, doc, obs, reservar} o null */
+function dialogoIngreso(item, sug){
+  const s = IX.sku[item] || {}, ci = !A.cargaCerrada;
+  return new Promise(res=>{
+    const d = document.createElement("div"); d.className = "lb dlgw";
+    d.innerHTML = `<div class="dlg" role="dialog"><div class="dlgh">Ingreso de ${esc(item)}</div>
+      <div class="dlgb"><div class="note" style="margin-bottom:10px">${esc(s.ext || s.d || "")} · ${esc(s.un || "")}</div>
+        <div class="form" style="padding:0">
+          <label>Tipo<select class="inp" id="qTipo"><option value="ING">Ingreso (con documento)</option>${ci?`<option value="CI">Carga inicial (sin sustento)</option>`:""}</select></label>
+          <label>Cantidad<input class="inp n" id="qCant" type="number" min="0" step="any" value="${sug||""}"></label>
+          <label>Documento<input class="inp" id="qDoc" placeholder="Auto ING-…" style="width:140px"></label>
+          <label style="flex:1;min-width:160px">Observación<input class="inp" id="qObs"></label></div></div>
+      <div class="dlgf"><button class="btn" data-dno>Cancelar</button><button class="btn" data-dsi="0">Registrar</button><button class="btn btn-navy" data-dsi="1">Registrar y reservar</button></div></div>`;
+    const fin = v => { d.remove(); document.removeEventListener("keydown", tecla, true); res(v); };
+    const tecla = e => { if(e.key==="Escape"){ e.stopPropagation(); fin(null); } };
+    d.addEventListener("click", e=>{ e.stopPropagation(); const b = e.target.closest("[data-dsi]");
+      if(b) fin({tipo:$("qTipo").value, cant:$("qCant").value, doc:$("qDoc").value, obs:$("qObs").value, reservar: b.dataset.dsi==="1"});
+      else if(e.target.closest("[data-dno]") || e.target===d) fin(null); });
+    document.addEventListener("keydown", tecla, true);
+    $("avHost").appendChild(d); setTimeout(()=>{ const i = $("qCant"); if(i){ i.focus(); i.select(); } }, 0);
+  });
+}
+function confirmar(msg, ok){
+  return new Promise(res=>{
+    const d = document.createElement("div"); d.className = "lb dlgw";
+    d.innerHTML = `<div class="dlg" role="alertdialog"><div class="dlgh">nuna cotton · Confirmar</div>
+      <div class="dlgb">${esc(msg).replace(/\n/g,"<br>")}</div>
+      <div class="dlgf"><button class="btn" data-dno>Cancelar</button><button class="btn btn-navy" data-dsi>${esc(ok||"Aceptar")}</button></div></div>`;
+    const fin = v => { d.remove(); document.removeEventListener("keydown", tecla, true); res(v); };
+    const tecla = e => { if(e.key==="Escape"){ e.stopPropagation(); fin(false); } if(e.key==="Enter"){ e.preventDefault(); fin(true); } };
+    d.addEventListener("click", e=>{ e.stopPropagation(); if(e.target.closest("[data-dsi]")) fin(true); else if(e.target.closest("[data-dno]") || e.target===d) fin(false); });
+    document.addEventListener("keydown", tecla, true);
+    $("avHost").appendChild(d); setTimeout(()=>{ const b = d.querySelector("[data-dsi]"); if(b) b.focus(); }, 0);
+  });
+}
+function toast(msg, err){ const t = document.createElement("div"); t.className = "toast"+(err?" err":""); t.textContent = msg; $("avHost").appendChild(t); setTimeout(()=>t.remove(), err?7000:3500); }
+
+/* ================= Índices del maestro ================= */
+function indexar(){
+  const ver = IX.ver || 0;
+  const M = A.maestro, by = (arr,k)=>Object.fromEntries(arr.map(x=>[x[k],x]));
+  IX = { fam:by(M.familias,"c"), un:by(M.unidades,"c"), av:by(M.avios,"c"), mar:by(M.marcas,"c"), med:by(M.medidas,"c"), tal:by(A.tallas,"c"), sku:by(M.skus,"id"), skusDe:{} };
+  M.skus.forEach(s=>(IX.skusDe[s.cod]=IX.skusDe[s.cod]||[]).push(s));
+  /* combinación exacta (avío|marca|medida|color|talla) y sin talla (avío|marca|medida|color) → SKU activo */
+  IX.combo = {}; IX.comboST = {}; IX.ver = ver + 1;
+  M.skus.forEach(s=>{ if(!s.act) return; const k = s.cod+"|"+s.mar+"|"+s.med+"|"+(s.col||"");
+    if(!IX.combo[k+"|"+s.tal]) IX.combo[k+"|"+s.tal] = s;
+    if(!IX.comboST[k] || s.tal==="T000") IX.comboST[k] = s; });
+}
+const entera = un => !!(IX.un[un] && IX.un[un].ent);
+const fq = (n,un) => entera(un) ? Math.round(n).toLocaleString("es-PE") : r2(n).toFixed(2);
+const mermaDe = cod => { const a = IX.av[cod]; const f = a && IX.fam[a.fam]; return f ? (Number(f.merma)||0) : 0; };
+const nomMar = c => c && c!=="M000" ? (IX.mar[c]||{n:c}).n : "";
+const nomTal = c => c && c!=="T000" ? (IX.tal[c]||{n:c}).n : "";
+const nomMed = c => c && c!=="E000" ? (IX.med[c]||{n:c}).n : "";
+const colorDe = s => s.col ? s.col + (s.coln ? " " + s.coln : "") : "";
+const skuDet = s => [nomMar(s.mar), nomTal(s.tal), nomMed(s.med), colorDe(s)].filter(Boolean).join(" · ") || "—";
+const skuLabel = id => { const s = IX.sku[id]; return s ? (s.ext || s.d) : id; };
+const cliMarca = () => { const m = A.maestro.marcas.find(x=>x.cli && P && x.cli===P.cli); return m ? m.c : ""; };
+
+/* ================= Modelo de avíos ================= */
+/* Cantidad que usa el BOM: UNDS. PROG. (col L). Sin programado = 0, sin caer a UNDS. PROD. */
+const qty = (p,prod) => A.baseQty==="PROD" ? prod : (p!=null ? p : 0);
+const sinProg = st => st.tl.filter(x=>x[2]==null).map(x=>x[0]);
+const total = st => st.tl.reduce((a,x)=>a+qty(x[2],x[1]),0);
+const sumProd = st => st.tl.reduce((a,x)=>a+x[1],0);
+const sumProg = st => st.tl.some(x=>x[2]!=null) ? st.tl.reduce((a,x)=>a+(x[2]||0),0) : "—";
+
+/* Línea BOM: {id, cod, proc, para, ref (SKU base: ÚNICO y TALLA), cons, items:[{sku, cons, ct}] (COLOR y MEDIDA)}. El control lo define el avío base. */
+const FAM_PROC = {BR:"AC", BT:"AC", TF:"ET", BS:"AC", CJ:"AC", ST:"AC", HT:"AC", EJ:"AC", FL:"AC", IM:"AC", BL:"AC", AD:"AC"};
+const existeProc = c => (A.procesos||[]).some(p=>p.c===c);
+const procDe = cod => { const a = IX.av[cod]; const c = FAM_PROC[a ? a.fam : String(cod).slice(0,2)] || "CS"; return existeProc(c) ? c : ((A.procesos||[])[0]||{c:c}).c; };
+const procLabel = c => { const p = (A.procesos||[]).find(x=>x.c===c); return p ? p.c + " · " + p.n : c; };
+const CTL = {UNICO:["U","único","b-gray"], TALLA:["T","x talla","b-ok"], COLOR:["C","color","b-navy"], MEDIDA:["M","medida","b-pend"]};
+const ctlDe = cod => { const c = (IX.av[cod]||{}).ctl; return CTL[c] ? c : "UNICO"; };
+const skusAv = cod => (IX.skusDe[cod]||[]).filter(s=>s.act);
+const sameCombo = (a,b) => a.mar===b.mar && a.med===b.med && (a.col||"")===(b.col||"");
+const tlq = st => st.tl.filter(x=>qty(x[2],x[1])>0);
+function resolverTalla(r, tc){ const ref = IX.sku[r.ref]; if(!ref || !tc) return null; return IX.combo[r.cod+"|"+ref.mar+"|"+ref.med+"|"+(ref.col||"")+"|"+tc] || null; }
+function nuevaLinea(id, st){
+  const s = IX.sku[id], ctl = ctlDe(s.cod);
+  const r = {id:++uid, cod:s.cod, proc:procDe(s.cod), para:"", ref:s.id, cons:1, items:[]};
+  if(ctl==="COLOR") r.items = [{sku:s.id, cons:1}];
+  if(ctl==="MEDIDA"){ r.cols = [s.col||""]; r.med = {}; r.ct = {}; }
+  initLinea(r, st); return r;
+}
+/* MEDIDA: {ref (SKU base: marca y color base), cols:[colores], med:{T###:E###}, ct:{T###:consumo}}.
+   Cada talla usa su medida; todos los colores comparten medidas y consumos. Cantidad = programada × consumo (+ merma). */
+function skuMedida(r, col, med){ const ref = IX.sku[r.ref]; if(!ref || !med) return null; return IX.comboST[r.cod+"|"+ref.mar+"|"+med+"|"+(col||"")] || null; }
+function medidasDe(r){ const ref = IX.sku[r.ref]; if(!ref) return []; const col0 = (r.cols||[])[0] ?? ref.col ?? "";
+  return [...new Map(skusAv(r.cod).filter(s=>s.mar===ref.mar && (s.col||"")===(col0||"")).map(s=>[s.med, s])).values()].sort((a,b)=>nomMed(a.med).localeCompare(nomMed(b.med),"es",{numeric:true})); }
+function coloresDe(r){ const ref = IX.sku[r.ref]; if(!ref) return []; return [...new Map(skusAv(r.cod).filter(s=>s.mar===ref.mar).map(s=>[s.col||"", s])).values()]; }
+function convertirMedida(r, st){ /* desde el formato v2.4–v3.0 (items con consumo por talla) */
+  if(!r.items || !r.items.length || r.med) return;
+  const it0 = IX.sku[r.items[0].sku]; r.ref = r.ref || (it0 ? it0.id : ""); r.cols = [it0 ? it0.col||"" : ""]; r.med = {}; r.ct = {};
+  st.tl.forEach(x=>{ const tc = x[3]; if(!tc) return; const it = r.items.find(i=>Number((i.ct||{})[tc])>0) || r.items[0]; const s = IX.sku[it.sku];
+    r.med[tc] = s ? s.med : ""; r.ct[tc] = Number((it.ct||{})[tc])||0; });
+  r.items = [];
+}
+function llenarCt(o, st){ o.ct = o.ct || {}; st.tl.forEach(x=>{ if(x[3] && o.ct[x[3]]==null) o.ct[x[3]] = Number(o.cons)||0; }); }
+function initLinea(r, st){
+  if(!r.proc) r.proc = procDe(r.cod); if(r.para==null) r.para = ""; if(r.cons==null) r.cons = 1; r.items = r.items || []; if(r.ref==null) r.ref = "";
+  const ctl = ctlDe(r.cod);
+  if(ctl==="MEDIDA"){
+    convertirMedida(r, st);
+    const ref = IX.sku[r.ref]; r.cols = r.cols && r.cols.length ? r.cols : [ref ? ref.col||"" : ""]; r.med = r.med || {}; r.ct = r.ct || {};
+    const nuevo = !Object.keys(r.ct).length;
+    st.tl.forEach(x=>{ const tc = x[3]; if(!tc) return; if(r.med[tc]==null) r.med[tc] = ref ? ref.med : ""; if(r.ct[tc]==null) r.ct[tc] = nuevo ? 1 : 0; });
+  }
+  r.items.forEach(it=>{ if(it.cons==null) it.cons = 1; if(it.modo==="T") llenarCt(it, st); });
+  if(ctl==="UNICO" && r.modo==="T") llenarCt(r, st);
+}
+/* Unidades de cálculo: la línea (ÚNICO, X TALLA) o cada ítem (COLOR, MEDIDA).
+   modo "U" = consumo único × total programado (obj.qt ajusta el total) · modo "T" = por talla (obj.ct consumos, obj.q ajustes por talla).
+   X TALLA siempre es por talla; MEDIDA arranca por talla; ÚNICO y COLOR arrancan en único. */
+const modoDef = ctl => ctl==="MEDIDA" ? "T" : "U";
+/* consumo de una talla según el modo (U = mismo consumo en todas las tallas, T = uno por talla) */
+const consModo = (o, modo, tc) => modo==="T" ? Number((o.ct||{})[tc])||0 : Number(o.cons)||0;
+function unidades(r){
+  const ctl = ctlDe(r.cod);
+  const mk = (o, sku) => { const modo = o.modo || modoDef(ctl); return {obj:o, sku, modo, cons: tc => consModo(o, modo, tc)}; };
+  if(ctl==="UNICO") return [mk(r, ()=>IX.sku[r.ref]||null)];
+  if(ctl==="TALLA") return [mk(r, tc=>resolverTalla(r,tc))];
+  if(ctl==="MEDIDA") return [];
+  return r.items.map(it=>mk(it, ()=>IX.sku[it.sku]||null));
+}
+const totalProg = st => tlq(st).reduce((a,x)=>a+qty(x[2],x[1]),0);
+/* Por talla: [{tn, tc, q, s, auto, ov, val}] */
+function porTallaU(st, r, u){
+  const merma = mermaDe(r.cod);
+  return st.tl.map(([tn,prod,prog,tc])=>{
+    const q = qty(prog,prod), s = u.sku(tc), c = u.cons(tc), raw = c*q*(1+merma);
+    const auto = s && q>0 && c>0 ? (entera(s.un) ? Math.ceil(raw-1e-9) : r2(raw)) : 0;
+    return {tn, tc, q, s, auto, val: auto};
+  });
+}
+/* Único: {tot (prendas), s, auto, ov, val} */
+function totalU(st, r, u){
+  const tot = totalProg(st), s = u.sku(), c = u.cons(), raw = c*tot*(1+mermaDe(r.cod));
+  const auto = s && tot>0 && c>0 ? (entera(s.un) ? Math.ceil(raw-1e-9) : r2(raw)) : 0;
+  return {tot, s, auto, val: auto};
+}
+/* Matriz de Medida: por color y talla → {tn, tc, q, med, cons, s, val} */
+function matrizMedida(st, r){
+  const merma = mermaDe(r.cod);
+  return (r.cols||[]).map(col=>({col, celdas: st.tl.map(([tn,prod,prog,tc])=>{
+    const q = qty(prog,prod), med = tc ? (r.med||{})[tc] : "", cons = tc ? consModo(r, r.modo || "T", tc) : 0, s = skuMedida(r, col, med), raw = cons*q*(1+merma);
+    return {tn, tc, q, med, cons, s, val: s && q>0 && cons>0 ? (entera(s.un) ? Math.ceil(raw-1e-9) : r2(raw)) : 0};
+  })}));
+}
+function calc(st, r){
+  const acc = {}, det = {}, sinTalla = {}, missing = [], ctl = ctlDe(r.cod);
+  if(ctl==="MEDIDA"){
+    if(!IX.sku[r.ref]) missing.push({tn:"SKU", tc:""});
+    else matrizMedida(st, r).forEach(f=>f.celdas.forEach(c=>{
+      if(c.q<=0 || c.cons<=0) return;
+      if(!c.s){ missing.push({tn:c.tn, tc:c.tc, col:f.col, med:c.med}); return; }
+      acc[c.s.id] = (acc[c.s.id]||0) + c.val; det[c.s.id] = det[c.s.id] || {}; det[c.s.id][c.tn] = (det[c.s.id][c.tn]||0) + c.val;
+    }));
+  }
+  unidades(r).forEach(u=>{
+    if(ctl!=="TALLA" && !u.sku()){ missing.push({tn: ctl==="UNICO"?"SKU":ctl.toLowerCase(), tc:""}); return; }
+    if(u.modo==="U" && ctl!=="TALLA"){ const t = totalU(st, r, u); if(t.s && t.val>0){ acc[t.s.id] = (acc[t.s.id]||0) + t.val; sinTalla[t.s.id] = true; } return; }
+    porTallaU(st, r, u).forEach(f=>{
+      if(f.q<=0) return;
+      if(!f.s){ if(ctl==="TALLA" && u.cons(f.tc)>0) missing.push({tn:f.tn, tc:f.tc}); return; }
+      if(f.val<=0) return;
+      acc[f.s.id] = (acc[f.s.id]||0) + f.val;
+      det[f.s.id] = det[f.s.id] || {}; det[f.s.id][f.tn] = (det[f.s.id][f.tn]||0) + f.val;
+    });
+  });
+  const lines = Object.entries(acc).map(([id,req])=>{ const s = IX.sku[id]; return {item:id, base:r.cod, desc:s.ext || s.d, det:skuDet(s), und:s.un, req, porTalla: sinTalla[id] ? null : (det[id]||null)}; });
+  return {lines, missing, ctl};
+}
+const reqLinea = (st,r) => calc(st,r).lines.reduce((a,l)=>a+l.req,0);
+const strip = rows => rows.map(r=>{ const n = JSON.parse(JSON.stringify(r)); delete n.id; return n; });
+const isDirty = c => JSON.stringify(strip(P.bom[c]||[])) !== (P.saved[c]||"[]");
+const saved = c => (P.saved[c]||"[]") !== "[]";
+let LPC = null, LPCk = ""; /* caché del requerimiento consolidado: válida mientras no cambie el BOM guardado, la base de cantidad ni el maestro */
+function lineasPE(){
+  const k = P.pe + "|" + A.baseQty + "|" + (IX.ver||0) + "|" + P.estilos.map(s=>P.saved[s.c]||"").join("§");
+  if(LPC && LPCk===k) return LPC;
+  LPCk = k;
+  const map = new Map();
+  P.estilos.forEach(s=>{
+    JSON.parse(P.saved[s.c]||"[]").forEach(r=>calc(s,r).lines.forEach(l=>{
+      if(!map.has(l.item)) map.set(l.item, {...l, req:0, est:new Set()});
+      const m = map.get(l.item); m.req += l.req; m.est.add(s.c);
+    }));
+  });
+  return LPC = [...map.values()].map(l=>({...l, req: entera(l.und) ? Math.ceil(l.req-1e-9) : Math.ceil(l.req*10-1e-9)/10, est:[...l.est].join(", ")}))
+    .sort((a,b)=>a.item.localeCompare(b.item,"es",{numeric:true}));
+}
+function faltantesDe(st, r){
+  const ref = IX.sku[r.ref];
+  if(ctlDe(r.cod)==="MEDIDA" && ref){ const seen = new Set();
+    return calc(st,r).missing.filter(m=>m.med).filter(m=>{ const k = m.col+"|"+m.med; if(seen.has(k)) return false; seen.add(k); return true; })
+      .map(m=>({cod:r.cod, mar:ref.mar, med:m.med, col:m.col||"", coln:((IX.skusDe[r.cod]||[]).find(s=>(s.col||"")===(m.col||""))||{}).coln||"", tal:"T000", tn:nomMed(m.med)})); }
+  if(ctlDe(r.cod)!=="TALLA" || !ref) return [];
+  return calc(st,r).missing.filter(m=>m.tc).map(m=>({cod:r.cod, mar:ref.mar, med:ref.med, col:ref.col||"", coln:ref.coln||"", tal:m.tc, tn:m.tn}));
+}
+function faltantesPE(){ const out = []; P.estilos.forEach(s=>(P.bom[s.c]||[]).forEach(r=>faltantesDe(s,r).forEach(m=>out.push({...m, estilo:s.c})))); return out; }
+const meta = () => ({cliente:P.cli, marca:P.marca, estilos:P.estilos.length, conBom:P.estilos.filter(s=>saved(s.c)).length});
+const sendLines = () => lineasPE().map(l=>({item:l.item, base:l.base, und:l.und, req:l.req}));
+const stk = item => (P.stock[item] || {ini:0,ing:0,sal:0,act:0,res:0,disp:0,resPE:0,salPE:0});
+
+/* ================= Imágenes ================= */
+const DRIVE = "https:" + "/" + "/drive.google.com/";
+const esUrl = v => String(v).indexOf("http") === 0;
+const imgUrl = (st,w) => !st.img ? "" : esUrl(st.img) ? st.img : DRIVE + "thumbnail?id=" + st.img + "&sz=w" + w;
+function foto(st, cls="thumb"){
+  if(!st.img) return `<span class="${cls}"><span class="note">Sin imagen</span></span>`;
+  return `<button class="${cls}" data-zoom="${st.c}"><img src="${imgUrl(st, cls==="thumb"?200:600)}" alt="${st.c}" loading="lazy" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'note',textContent:'Ver imagen'}))"></button>`;
+}
+function zoom(c){
+  const s = P.estilos.find(x=>x.c===c); if(!s) return;
+  const lb = document.createElement("div"); lb.className="lb"; lb.id="lb";
+  const link = esUrl(s.img) ? s.img : DRIVE + "file/d/" + s.img + "/view";
+  lb.innerHTML = `<div class="lb-in"><img src="${imgUrl(s,1200)}" alt="${c}" referrerpolicy="no-referrer">
+    <div class="lb-cap"><div><strong>${c}</strong> · ${esc(s.d)}<div class="note">${esc(s.obs)}</div></div>
+    <div style="display:flex;gap:12px;align-items:center"><a href="${link}" target="_blank" rel="noopener">Abrir original</a><button class="btn btn-sm" data-closelb>Cerrar</button></div></div></div>`;
+  lb.addEventListener("click", e=>{ if(e.target===lb) lb.remove(); });
+  $("avHost").appendChild(lb);
+}
+const tallasHtml = s => `<div class="tallas">${s.tl.map(x=>`<div class="tb" title="${esc(x[3]||"sin código")}"><span>${esc(x[0])}</span><span>${x[2]??"—"}</span></div>`).join("")}</div>`;
+
+/* ================= Navegación ================= */
+function medirCabeceras(){
+  const root = document.documentElement, top = document.querySelector(".top"), ph = document.querySelector(".pedhead"), ed = document.querySelector("#conEd .ed-top");
+  root.style.setProperty("--toph", (top ? top.offsetHeight : 0) + "px");
+  root.style.setProperty("--pedh", (ph ? ph.offsetHeight : 0) + "px");
+  root.style.setProperty("--edh", (ed ? ed.offsetHeight : 0) + "px");
+}
+window.addEventListener("resize", medirCabeceras);
+const VPED = ["ped","res","sal"]; /* vistas que listan pedidos y abren el pedido */
+function render(){
+  LPC = null;
+  const app = $("app");
+  /* conserva la posición: página y lista de estilos */
+  const y = window.scrollY, sl = document.querySelector(".slist"), slTop = sl ? sl.scrollTop : 0;
+  setTimeout(()=>{ medirCabeceras(); const nl = document.querySelector(".slist"); if(nl) nl.scrollTop = slTop; if(Math.abs(window.scrollY - y) > 2) window.scrollTo(0, y); }, 0);
+  if(VPED.includes(view)) app.innerHTML = P ? renderPedido() : renderPedidos();
+  if(view==="ing") app.innerHTML = renderIng();
+  if(view==="mae") app.innerHTML = renderMae();
+  if(view==="pla") app.innerHTML = renderPla();
+  if(view==="cfg") app.innerHTML = renderCfg();
+}
+/** Avíos tiene consumos sin guardar: pregunta antes de salir (lo usa la barra lateral). */
+async function avPuedeSalir(){ return !(P && Object.keys(P.bom).some(isDirty)) || await confirmar("Hay consumos sin guardar. ¿Salir igual?"); }
+/* Entrar a una sección desde la barra lateral: siempre abre su lista (cierra el pedido abierto). */
+async function nav(v){
+  view = v; P = null; pedMax = PED_TANDA; pedE = ""; pedQ = ""; movQ = ""; movT = "";
+  render();
+  if((v==="mae" || v==="ing") && !STOCK) STOCK = await run("getStock");
+  if(v==="res" || v==="sal" || v==="ing") MOVS = await run("getMovimientos", "");
+  if(v==="cfg") cfgEdit = {PROCESO: JSON.parse(JSON.stringify(A.procesos||[])), PARA: JSON.parse(JSON.stringify(A.paras||[]))};
+  render();
+}
+
+/* ================= Pedidos ================= */
+const estadoBadge = e => {
+  const m = {"ATENDIDO":"b-ok","ATENDIDO PARCIAL":"b-navy","RESERVADO":"b-ok","RESERVADO PARCIAL":"b-pend","POR RESERVAR":"b-red","SIN BOM":"b-gray"};
+  return `<span class="badge ${m[e]||"b-gray"}">${esc(e||"—")}</span>`;
+};
+const EST_AV = [["SIN BOM","b-gray","#5B6B80"],["POR RESERVAR","b-red","#B3261E"],["RESERVADO PARCIAL","b-pend","#8A6D00"],["RESERVADO","b-ok","#1A9F7F"],["ATENDIDO PARCIAL","b-navy","#082D58"],["ATENDIDO","b-ok","#0E7A5F"]];
+const colorEst = e => (EST_AV.find(x=>x[0]===e)||["","","#5B6B80"])[2];
+let pedOrden = "pe";
+/* Orden natural por número de pedido: PE-1187-2 < PE-1187-10 < PE-1188 */
+const cmpPE = (a,b) => { const x = String(a).match(/\d+/g)||[], y = String(b).match(/\d+/g)||[]; for(let i=0;i<Math.max(x.length,y.length);i++){ const d = (+x[i]||0)-(+y[i]||0); if(d) return d; } return 0; };
+const fechaNum = f => { const m = String(f||"").match(/(\d{2})\/(\d{2})\/(\d{4})/); return m ? +(m[3]+m[2]+m[1]) : 99999999; };
+const imgDe = (id, w) => !id ? "" : esUrl(id) ? id : DRIVE + "thumbnail?id=" + id + "&sz=w" + w;
+const pasaStatus = p => pedS==="__ACT" ? p.status!=="CERRADO" : (!pedS || p.status===pedS);
+/* Reserva y compra: pedidos con BOM por reservar o comprar. Salidas: pedidos con algo reservado o atendido a medias. */
+const MODO_PED = {
+  ped:{t:"Pedidos", n:"todos los pedidos", est:null, sub:"est"},
+  res:{t:"Reserva y compra", n:"pedidos con BOM pendientes de reservar o comprar", est:["POR RESERVAR","RESERVADO PARCIAL","RESERVADO"], sub:"res"},
+  sal:{t:"Salidas", n:"pedidos con avíos reservados por despachar", est:["RESERVADO PARCIAL","RESERVADO","ATENDIDO PARCIAL"], sub:"sal"}
+};
+const modoPed = () => MODO_PED[VPED.includes(view) ? view : "ped"];
+const pasaModo = p => !modoPed().est || modoPed().est.includes(p.estado);
+const hayPed = p => [p.pe, p.marca, p.cli, p.status, p.estado, p.exf||""].join(" ");
+function filtrarPedidos(){
+  let list = A.pedidos.filter(p=>pasaModo(p) && (!pedE || p.estado===pedE) && pasaStatus(p) && NPK.match(hayPed(p), pedQ));
+  list = list.slice().sort((a,b)=>pedOrden==="pe-asc" ? cmpPE(a.pe,b.pe) : cmpPE(b.pe,a.pe));
+  if(pedOrden==="exf") list = list.slice().sort((a,b)=>fechaNum(a.exf)-fechaNum(b.exf) || cmpPE(b.pe,a.pe));
+  if(pedOrden==="est") list = list.slice().sort((a,b)=>EST_AV.findIndex(x=>x[0]===a.estado)-EST_AV.findIndex(x=>x[0]===b.estado));
+  if(pedOrden==="bom") list = list.slice().sort((a,b)=>(b.conBom/(b.estilos||1))-(a.conBom/(a.estilos||1)));
+  return list;
+}
+const logoCli = cli => { const m = A.maestro.marcas.find(x=>x.cli && x.cli===cli && x.logo); return m ? m.logo : ""; };
+const iniciales = t => String(t||"?").split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join("").toUpperCase();
+const nfm = n => n==null ? "—" : Number(n).toLocaleString("es-PE");
+/* Imagen de la tarjeta: página 1 del CAD (PDF en Drive); si no hay o falla, la imagen del primer estilo. */
+function imgFalla(el){
+  const alt = el.dataset.alt;
+  if(alt){ el.dataset.alt = ""; el.src = alt; return; }
+  el.replaceWith(Object.assign(document.createElement("span"), {className:"note", textContent:"Sin imagen"}));
+}
+const difProg = p => { if(!p.qPed || p.qProg==null) return ""; const d = Math.round(100*p.qProg/p.qPed) - 100;
+  return d>0 ? `<i class="up" title="Programado sobre el pedido">↑ +${d}%</i>` : d<0 ? `<i class="dn" title="Programado bajo el pedido">↓ −${-d}%</i>` : ""; };
+function tarjetaPedido(p){
+  const pct = p.estilos ? Math.round(100*Math.min(p.conBom,p.estilos)/p.estilos) : 0, lg = logoCli(p.cli);
+  const src = p.cad ? imgDe(p.cad,400) : imgDe(p.img,300), alt = p.cad && p.img ? imgDe(p.img,300) : "";
+  return `<article class="pcard" data-open="${p.pe}" tabindex="0" role="button" aria-label="Abrir ${p.pe}">
+    <div class="pimg">${src ? `<img src="${src}" data-alt="${alt}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="imgFalla(this)">` : `<span class="note">Sin imagen</span>`}
+      <span class="pstat${p.status==="CERRADO"?" cerr":""}">${esc(p.status)}</span>${p.exf ? `<span class="pexf">EXF ${esc(p.exf)}</span>` : ""}
+      ${p.cad ? `<button class="pcad" data-vercad="${p.cad}" data-pe="${p.pe}" title="Ver el CAD completo">Ver CAD</button>` : `<span class="pcad sin">Sin CAD</span>`}</div>
+    <div class="pbody">
+      <div class="pid">
+        <div class="plogo">${lg ? `<img src="${imgDe(lg,120)}" alt="${esc(p.marca)}" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('b'),{textContent:'${esc(iniciales(p.marca))}'}))">` : `<b>${esc(iniciales(p.marca))}</b>`}</div>
+        <div><div class="ppe">${NPK.hl(p.pe, pedQ)}</div><div class="pcli">${NPK.hl(p.marca, pedQ)} <span>${NPK.hl(p.cli, pedQ)}</span></div></div>
+      </div>
+      <div class="pmet">
+        <div><span>Pedido</span><b>${nfm(p.qPed)}</b></div>
+        <div><span>Programado</span><b>${nfm(p.qProg)}</b>${difProg(p)}</div>
+        <div><span>Estilos</span><b>${p.estilos||"—"}</b></div>
+        <div><span>Con BOM</span><b>${p.conBom}</b></div>
+      </div>
+      <div class="pestado"><span class="pest" style="color:${colorEst(p.estado)}">● ${esc(p.estado)}</span><span class="pfecha">${p.fecha ? esc(p.fecha.split(" ")[0]) : ""}</span></div>
+      <div class="pbar" title="${p.conBom}/${p.estilos||"?"} estilos con BOM"><i style="width:${pct}%"></i></div>
+    </div></article>`;
+}
+/* Visor del CAD dentro de la app (vista previa de Drive: todas las páginas, con zoom) */
+function verCad(id, titulo){
+  const d = document.createElement("div"); d.className = "lb"; d.id = "lb";
+  d.innerHTML = `<div class="cadv"><div class="mdh"><strong>CAD · ${esc(titulo||"")}</strong>
+      <span style="margin-left:auto;display:flex;gap:8px"><a class="btn btn-sm" href="${DRIVE}file/d/${id}/view" target="_blank" rel="noopener">Abrir en Drive</a><button class="btn btn-sm" data-cerrarlb>Cerrar (Esc)</button></span></div>
+    <iframe src="${DRIVE}file/d/${id}/preview" title="CAD ${esc(titulo||"")}" allow="autoplay"></iframe></div>`;
+  d.addEventListener("click", e=>{ if(e.target===d || e.target.closest("[data-cerrarlb]")) d.remove(); });
+  $("avHost").appendChild(d);
+}
+/* La cuadrícula pinta por tandas: abre al instante aunque haya cientos de pedidos */
+const PED_TANDA = 60; let pedMax = PED_TANDA;
+function gridPedidos(list){
+  if(!list.length) return `<div class="panel empty" style="grid-column:1/-1">No hay pedidos con esos filtros.</div>`;
+  return list.slice(0, pedMax).map(tarjetaPedido).join("") + (list.length > pedMax ? `<button class="btn pmas" data-pedmas>Mostrar ${Math.min(PED_TANDA, list.length - pedMax)} más · quedan ${list.length - pedMax}</button>` : "");
+}
+function renderPedidos(){
+  const M = modoPed(), base = A.pedidos.filter(pasaModo);
+  const sts = ["", ...new Set(base.map(p=>p.status))];
+  const list = filtrarPedidos();
+  const cuenta = e => base.filter(p=>p.estado===e && pasaStatus(p)).length;
+  return `
+  <div class="phead">
+    <div><h2 style="margin:0;font-size:20px">${M.t}</h2><span class="note">${list.length} de ${base.length} ${M.n} · ${pedS==="__ACT" ? "activos (sin cerrados)" : pedS ? "status " + esc(pedS) : "todos los status"}${M.est ? " · al abrir uno vas directo a " + (view==="res" ? "Reserva y compra" : "Salida") : ""}</span></div>
+    <div class="psearch"><input class="inp" data-pedq placeholder="Buscar PE, cliente, status, estado o fecha…" value="${esc(pedQ)}" autocomplete="off"></div>
+    <select class="inp" data-peds><option value="__ACT" ${pedS==="__ACT"?"selected":""}>Activos (sin cerrados) · ${base.filter(p=>p.status!=="CERRADO").length}</option><option value="" ${pedS===""?"selected":""}>Todos · ${base.length}</option>${sts.filter(Boolean).sort().map(e=>`<option value="${e}" ${e===pedS?"selected":""}>${e} · ${base.filter(p=>p.status===e).length}</option>`).join("")}</select>
+    <select class="inp" data-pord><option value="pe" ${pedOrden==="pe"?"selected":""}>N° pedido (mayor a menor)</option><option value="pe-asc" ${pedOrden==="pe-asc"?"selected":""}>N° pedido (menor a mayor)</option><option value="exf" ${pedOrden==="exf"?"selected":""}>Ex-Factory más próximo</option><option value="est" ${pedOrden==="est"?"selected":""}>Por estado de avíos</option><option value="bom" ${pedOrden==="bom"?"selected":""}>Avance de BOM</option></select>
+    <button class="btn btn-sm" data-refped title="Vuelve a leer PLAN DE VENTAS">⟳ Actualizar</button>
+  </div>
+  <div class="pchips"><span class="pchl">Status</span><button class="pchip ${pedS==="__ACT"?"on":""}" data-pschip="__ACT">Activos <b>${base.filter(p=>p.status!=="CERRADO").length}</b></button>
+    <button class="pchip ${pedS===""?"on":""}" data-pschip="">Todos <b>${base.length}</b></button>
+    ${sts.filter(Boolean).sort().map(e=>`<button class="pchip ${pedS===e?"on":""}" data-pschip="${esc(e)}">${esc(e)} <b>${base.filter(p=>p.status===e).length}</b></button>`).join("")}</div>
+  <div class="pchips"><span class="pchl">Avíos</span><button class="pchip ${pedE?"":"on"}" data-pchip="">Todos <b>${base.filter(pasaStatus).length}</b></button>
+    ${EST_AV.filter(([e])=>!M.est || M.est.includes(e)).map(([e])=>`<button class="pchip ${pedE===e?"on":""}" data-pchip="${e}" style="--c:${colorEst(e)}">● ${e} <b>${cuenta(e)}</b></button>`).join("")}</div>
+  <div class="pgrid" id="pgrid">${gridPedidos(list)}</div>
+  ${view==="res" ? renderMov(["RESERVA","LIBERA"], "Reservas y liberaciones recientes") : view==="sal" ? renderMov(["SALIDA"], "Salidas recientes") : ""}`;
+}
+async function abrirPedido(pe){
+  const r = await run("buscarPedido", pe);
+  P = {...r, saved:{}, bom:{}};
+  P.estilos.forEach(s=>{
+    const rows = (r.bom[s.c] || []).filter(x=>x && x.cod);
+    P.saved[s.c] = JSON.stringify(rows);
+    P.bom[s.c] = rows.map(x=>{ x.id = ++uid; initLinea(x,s); return x; });
+    if(rows.length) P.saved[s.c] = JSON.stringify(strip(P.bom[s.c])); /* defaults de proceso/para no cuentan como cambio */
+  });
+  sub = modoPed().sub; selStyle = P.estilos[0].c; tplMode = null; salDest = ""; salObs = "";
+  if(!VPED.includes(view)) view = "ped";
+  if(sub==="res" || sub==="sal"){ const [st, mv] = await Promise.all([run("getStock", P.pe), sub==="sal" ? run("getMovimientos", P.pe) : Promise.resolve(MOVS)]); P.stock = st; MOVS = mv; }
+  render();
+}
+function renderPedido(){
+  const ok = P.estilos.filter(s=>saved(s.c)).length, st = A.pedidos.find(p=>p.pe===P.pe);
+  /* Desde Reserva y compra o Salidas solo se ve lo de almacén: reserva y salida. Estilos y consumo quedan en Pedidos. */
+  const tabs = view==="res" || view==="sal" ? [["res","Reserva y compra"],["sal","Salida"]] : [["est","Estilos"],["con","Consumo de avíos"],["res","Reserva y compra"],["sal","Salida"]];
+  if(!tabs.some(t=>t[0]===sub)) sub = tabs[0][0];
+  const body = sub==="est" ? renderEst() : sub==="con" ? renderCon() : sub==="res" ? renderRes() : renderSal();
+  const cm = cliMarca();
+  return `<div class="pedhead">
+  <div class="kpis">
+    <button class="btn btn-sm no-print" data-cerrar>← ${modoPed().t}</button>
+    <div class="pe-id"><span>Pedido</span>${P.pe}</div>
+    ${P.cad ? `<button class="btn btn-sm no-print" data-vercad="${P.cad}" data-pe="${P.pe}">Ver CAD</button>` : ""}
+    <div class="kpi"><strong>${esc(P.marca||"—")}</strong>${esc(P.cli)} · ${cm?cm:`<span class="buy">sin marca vinculada</span>`}</div>
+    <div class="kpi"><strong><span class="badge b-navy">${esc(P.status||"—")}</span></strong>status pedido</div>
+    <div class="kpi"><strong>${P.estilos.length}</strong>estilos</div>
+    <div class="kpi"><strong>${P.estilos.reduce((a,s)=>a+sumProd(s),0).toLocaleString("es-PE")}</strong>prendas pedido</div>
+    <div class="kpi"><strong>${P.estilos.reduce((a,s)=>a+s.tl.reduce((x,t)=>x+(t[2]||0),0),0).toLocaleString("es-PE")}</strong>prendas programadas</div>
+    <div class="kpi"><strong>${ok}/${P.estilos.length}</strong>con BOM guardado</div>
+    <div class="kpi"><strong>${st?estadoBadge(st.estado):estadoBadge("SIN BOM")}</strong>estado avíos</div>
+  </div>
+  ${P.status==="CERRADO"?`<div class="warnbox" style="margin-bottom:8px">Pedido CERRADO: solo consulta. No admite reservas ni salidas.</div>`:""}
+  <div class="sub">${tabs.map(([k,v],i)=>`<button data-sub="${k}" aria-selected="${k===sub}"><b>${i+1}</b>${v}</button>`).join("")}</div></div>
+  ${body}`;
+}
+
+/* --- 1 Estilos --- */
+const bomBadge = c => isDirty(c) ? `<span class="badge b-pend">Sin guardar</span>` : saved(c) ? `<span class="badge b-ok">${P.bom[c].length} avíos</span>` : `<span class="badge b-red">Sin BOM</span>`;
+function renderEst(){
+  return `<div class="panel" id="vEst"><div class="scroll"><table>
+    <thead><tr><th>Imagen</th><th>Código modelo</th><th>Descripción</th><th>Molde</th><th>Talla / Prog.</th><th class="num">Cant. pedido</th><th class="num">Cant. prog.</th><th>BOM avíos</th><th></th></tr></thead>
+    <tbody>${P.estilos.map(s=>`<tr>
+      <td>${foto(s)}</td><td class="code">${s.c}</td>
+      <td class="desc"><strong style="font-weight:600">${esc(s.d)}</strong><span class="est clamp" title="${esc(s.obs)}">${esc(s.obs)}</span></td>
+      <td>${esc(s.m)}</td><td>${tallasHtml(s)}</td>
+      <td class="num">${sumProd(s)}</td><td class="num">${sumProg(s)}</td>
+      <td>${bomBadge(s.c)}</td>
+      <td><button class="btn btn-sm" data-edit="${s.c}">Editar consumo</button></td></tr>`).join("")}</tbody>
+  </table></div></div>`;
+}
+
+/* --- 2 Consumo --- */
+let addQ = "", addSolo = true;
+const dlSku = (id, list) => `<datalist id="${id}">${list.map(s=>`<option value="${s.id}">${esc(s.ext||s.d)}</option>`).join("")}</datalist>`;
+/* Botón que abre el selector con búsqueda. key = "idLinea|ref|" o "idLinea|item|i" */
+const skuBtn = (key, val, txt, ph) => `<button class="pkt pkt-sku ${val?"":"empty"}" data-skupk="${key}" title="Buscar SKU"><span class="pkl"><b>${esc(val||ph||"Elegir SKU…")}</b><small>${esc(txt||"Busca por código, color, medida o marca")}</small></span><i>⌕</i></button>`;
+const dispTxt = id => { const x = P && P.stock && P.stock[id], s = IX.sku[id]; return x ? "disponible " + fq(x.disp, s ? s.un : "") : ""; };
+/** Selector de SKU de una línea del BOM: lista los SKU activos del avío (o las combinaciones si es X TALLA). */
+function pkSku(rid, modo, i){
+  const st = curSt(), r = findRow(rid); if(!r) return;
+  const ctl = ctlDe(r.cod), cm = cliMarca(), a = IX.av[r.cod] || {d:""};
+  const base = ctl==="TALLA" ? porMarca(combosTalla(r.cod)) : porMarca(skusAv(r.cod));
+  const cur = modo==="item" ? (r.items[+i]||{}).sku : r.ref;
+  const enUso = new Set((P.bom[st.c]||[]).flatMap(x=>[x.ref, ...(x.items||[]).map(it=>it.sku)]));
+  NPK.open({title:"Elegir SKU · " + r.cod, sub:a.d + " · " + st.c + (ctl==="TALLA" ? " · se usa el SKU de cada talla" : ""), ph:"Buscar código, color, medida, marca…", cur,
+    back:`[data-skupk="${rid}|${modo}|${i||""}"]`,
+    src:()=>({items: base.map(s=>({id:s.id, lbl: ctl==="TALLA" ? comboLabel(s) : s.id,
+        sub: ctl==="TALLA" ? "Combinación · ej. " + s.id : [skuDet(s), s.un].filter(Boolean).join(" · "),
+        hay: [s.id, s.ext||s.d, skuDet(s), comboLabel(s)].join(" "), note: ctl==="TALLA" ? "" : dispTxt(s.id),
+        use: enUso.has(s.id) ? 1 : 0, mine: !cm || s.mar===cm || s.mar==="M000"})),
+      chips: cm ? [["cli","Marca del cliente y genéricas",x=>x.mine],["all","Todos",()=>1]] : [["all","Todos",()=>1]]}),
+    onPick: it=>{ const s = IX.sku[it.id]; if(!s) return;
+      if(modo==="item") r.items[+i].sku = s.id;
+      else { r.ref = s.id; if(ctl==="MEDIDA"){ r.cols = r.cols && r.cols.length ? r.cols : [""]; r.cols[0] = s.col||""; } }
+      render(); }});
+}
+/** Selector de avío base (alta rápida y Nuevo SKU). Escribe el código en el input oculto `campo`. */
+function pkAvio(campo, despues){
+  const cur = ($(campo)||{}).value || "";
+  NPK.open({title:"Elegir avío base", sub:"Maestro de avíos · el control de consumo lo define la familia", ph:"Buscar código, descripción o familia…", cur, back:`[data-pkavio="${campo}"]`,
+    src:()=>({items: A.maestro.avios.filter(a=>a.act).map(a=>{ const n = (IX.skusDe[a.c]||[]).filter(s=>s.act).length, f = IX.fam[a.fam]||{n:a.fam};
+        return {id:a.c, lbl:a.c, sub:a.d + " · " + f.n + " · " + a.un, tag:a.ctl, tagTxt:CTL[a.ctl||"UNICO"][1], hay:[a.c, a.d, f.n, a.un].join(" "), note: n ? n + " SKU" : "", warn: n ? "" : "sin SKU", n}; }),
+      chips:[["all","Todos",()=>1],["sku","Con SKU",x=>x.n],["hilo","Hilos",x=>x.id.startsWith("HI")]]}),
+    onPick: it=>{ $(campo).value = it.id; const b = document.querySelector(`[data-pkavio="${campo}"]`);
+      if(b){ b.classList.remove("empty"); b.innerHTML = `<span class="pkl"><b>${esc(it.id)}</b><small>${esc(it.sub)}</small></span><i>⌕</i>`; }
+      if(despues) despues(it.id); }});
+}
+/** Selector de SKU de todo el maestro (Ingresos). */
+function pkSkuAll(campo){
+  const cur = ($(campo)||{}).value || "", S0 = STOCK || {};
+  NPK.open({title:"Elegir SKU", sub:"BD_AVIOS · SKU activos", ph:"Buscar SKU, descripción, color, medida, marca…", cur, back:`[data-pkskuall="${campo}"]`,
+    src:()=>({items: A.maestro.skus.filter(s=>s.act).map(s=>{ const x = S0[s.id]; return {id:s.id, lbl:s.id, sub:(s.ext||s.d) + " · " + s.un, hay:[s.id, s.ext||s.d, skuDet(s), s.cod].join(" "),
+        note: x ? "stock " + fq(x.act, s.un) + (x.res ? " · reserva " + fq(x.res, s.un) : "") : "", act: x ? x.act : 0, res: x ? x.res : 0}; }),
+      chips:[["all","Todos",()=>1],["stk","Con stock",x=>x.act>0],["res","Con reserva pendiente",x=>x.res>0],["sin","Sin stock",x=>!(x.act>0)]]}),
+    onPick: it=>{ $(campo).value = it.id; const b = document.querySelector(`[data-pkskuall="${campo}"]`);
+      if(b){ b.classList.remove("empty"); b.innerHTML = `<span class="pkl"><b>${esc(it.id)}</b><small>${esc(it.sub)}</small></span><i>⌕</i>`; }
+      const c = $("iCant"); if(c) c.focus(); }});
+}
+function combosTalla(cod){ const m = new Map(); skusAv(cod).forEach(s=>{ const k = s.mar+"|"+s.med+"|"+(s.col||""); if(!m.has(k)) m.set(k, s); }); return [...m.values()]; }
+const comboLabel = s => [nomMar(s.mar)||"Genérica", nomMed(s.med), colorDe(s)].filter(Boolean).join(" · ");
+const porMarca = list => { const cm = cliMarca(); return list.slice().sort((x,y)=>(y.mar===cm)-(x.mar===cm) || x.id.localeCompare(y.id,"es",{numeric:true})); };
+let enModal = false, recien = new Set();
+const enBom = s => { const st = curSt(); return (P.bom[st.c]||[]).some(r=>r.ref===s.id || (r.items||[]).some(it=>it.sku===s.id) || (ctlDe(s.cod)==="TALLA" && r.cod===s.cod && IX.sku[r.ref] && sameCombo(IX.sku[r.ref], s))); };
+function opts(arr, sel, lab){ return arr.map(x=>`<option value="${x.c}" ${x.c===sel?"selected":""}>${esc(lab(x))}</option>`).join(""); }
+function abrirAlta(){
+  const st = curSt(), M = A.maestro, cm = cliMarca() || "M000", tcod = st.tl.filter(x=>x[3]);
+  let m = $("modal");
+  if(!m){ m = document.createElement("div"); m.id = "modal"; m.className = "lb"; $("avHost").appendChild(m); m.addEventListener("click", e=>{ if(e.target===m) cerrarModal(); }); }
+  enModal = true;
+  m.innerHTML = `<div class="mdl" role="dialog" aria-label="Registrar avío nuevo">
+    <div class="mdh"><div><strong>Registrar avío nuevo · se agrega al BOM de ${st.c}</strong><div class="note">Crea el avío base y/o su SKU sin salir del consumo</div></div><button class="btn btn-sm" data-cerrarmodal>Cerrar (Esc)</button></div>
+    <div class="alta">
+      <div class="altrow"><label class="rad"><input type="radio" name="nModo" value="E" data-nmodo checked> SKU nuevo de un avío existente</label>
+        <label class="rad"><input type="radio" name="nModo" value="N" data-nmodo> Avío base nuevo + su SKU</label></div>
+      <fieldset id="secE"><legend>Avío base existente</legend>
+        <label class="w2">Avío base<input type="hidden" id="nCod"><button class="pkt pkt-w empty" data-pkavio="nCod"><span class="pkl"><b>Elegir avío base…</b><small>Busca por código, descripción o familia</small></span><i>⌕</i></button></label>
+
+        <span class="note" id="nCodInfo"></span></fieldset>
+      <fieldset id="secN" style="display:none"><legend>Avío base nuevo</legend>
+        <label>Familia<select class="inp" id="nFam" data-nctl>${opts(M.familias.filter(f=>f.act), "", f=>f.c+" · "+f.n)}</select></label>
+        <label class="w2">Descripción<input class="inp" id="nDesc" style="text-transform:uppercase" value="${esc(addQ.trim().toUpperCase())}"></label>
+        <label>UN<select class="inp" id="nUn">${opts(M.unidades, "UND", u=>u.c)}</select></label>
+        <label>Presentación<input class="inp" id="nPres"></label>
+        <span class="note" id="nFamCtl"></span></fieldset>
+      <fieldset><legend>SKU</legend>
+        <label>Marca<select class="inp" id="nMar">${opts(M.marcas.filter(x=>x.act), cm, x=>x.c+" · "+x.n)}</select></label>
+        <label id="nTalBox">Talla<select class="inp" id="nTal"><option value="T000">T000 · -</option>${A.tallas.filter(t=>t.c!=="T000").map(t=>`<option value="${t.c}">${t.c} · ${esc(t.n)}</option>`).join("")}</select></label>
+        <span class="note" id="nTalNota" style="display:none">X talla: se crea un SKU por cada talla del estilo (${esc(tcod.map(x=>x[0]).join(", ")) || "sin tallas con código"}).</span>
+        <label>Medida<select class="inp" id="nMed">${opts(M.medidas.filter(x=>x.act), "E000", x=>x.c+" · "+x.n)}</select></label>
+        <label>Cód. color<input class="inp" id="nCol" style="width:110px;text-transform:uppercase" placeholder="PKM001"></label>
+        <label>Nombre color<input class="inp" id="nColn" style="width:180px"></label>
+        <label class="w2">Descripción add<input class="inp" id="nAdd" style="text-transform:uppercase"></label>
+        <label>Ubicación<input class="inp" id="nUbic" style="width:80px;text-transform:uppercase"></label></fieldset>
+      <div class="altrow"><span class="note">Las tallas no se crean aquí: vienen de PLAN DE VENTAS. Si la combinación ya existe, se usa el SKU existente.</span>
+        <button class="btn btn-teal" data-guardaralta style="margin-left:auto">Registrar y agregar al BOM</button></div>
+    </div></div>`;
+  setTimeout(()=>{ const i = document.querySelector('[data-pkavio="nCod"]'); if(i) i.focus(); refrescarAlta(); }, 0);
+}
+function ctlAlta(){ const modo = (document.querySelector("[data-nmodo]:checked")||{}).value; return modo==="N" ? ((IX.fam[$("nFam").value]||{}).ctl || "UNICO") : ((IX.av[($("nCod").value||"").trim().toUpperCase()]||{}).ctl || "UNICO"); }
+function refrescarAlta(){
+  const modo = (document.querySelector("[data-nmodo]:checked")||{}).value;
+  $("secE").style.display = modo==="N" ? "none" : ""; $("secN").style.display = modo==="N" ? "" : "none";
+  const a = IX.av[($("nCod").value||"").trim().toUpperCase()];
+  $("nCodInfo").textContent = modo==="N" ? "" : a ? a.d + " · " + a.un + " · control " + CTL[a.ctl||"UNICO"][1] + " · " + (IX.skusDe[a.c]||[]).length + " SKU" : "";
+  if($("nFamCtl")) $("nFamCtl").textContent = "Control de consumo (de la familia): " + CTL[(IX.fam[$("nFam").value]||{}).ctl || "UNICO"][1];
+  const t = ctlAlta()==="TALLA"; $("nTalBox").style.display = t ? "none" : ""; $("nTalNota").style.display = t ? "" : "none";
+}
+async function guardarAlta(){
+  const st = curSt(), modo = (document.querySelector("[data-nmodo]:checked")||{}).value;
+  const a = modo==="N" ? {fam:$("nFam").value, d:$("nDesc").value, un:$("nUn").value, pres:$("nPres").value} : null;
+  const k = {cod:($("nCod").value||"").trim().toUpperCase(), mar:$("nMar").value, tal:$("nTal").value, med:$("nMed").value, col:$("nCol").value, coln:$("nColn").value, add:$("nAdd").value, ubic:$("nUbic").value};
+  if(!a && !IX.av[k.cod]) return toast("Elige un avío base de la lista o marca \"Avío base nuevo\".", true);
+  const r = await run("registrarAvioRapido", a, k, st.tl.map(x=>x[3]).filter(Boolean));
+  setMaestro(r.maestro);
+  P.bom[st.c].push(nuevaLinea(r.ids[0], st));
+  cerrarModal(); addQ = ""; render();
+  toast((a ? "Avío " + r.cod + " creado. " : "") + (r.creados.length ? "SKU " + r.creados.join(", ") + " creado" + (r.creados.length>1?"s":"") + "." : "SKU existente reutilizado.") + " Agregado al BOM de " + st.c + ": recuerda Guardar BOM.");
+}
+function cerrarModal(){ enModal = false; const m = $("modal"); if(m) m.remove(); }
+function resultadosAdd(){
+  const q = addQ.trim(); if(q.length<2) return "";
+  const cm = cliMarca(), seen = new Set(); let out = [];
+  for(const s of A.maestro.skus){
+    if(!s.act || s.tipo==="STOCK") continue;
+    if(addSolo && cm && s.mar!==cm && s.mar!=="M000") continue;
+    const a = IX.av[s.cod] || {d:""};
+    if(!NPK.match(s.id+" "+s.cod+" "+(s.ext||s.d)+" "+a.d+" "+skuDet(s), q)) continue;
+    const ctl = ctlDe(s.cod), key = ctl==="TALLA" ? s.cod+"|"+s.mar+"|"+s.med+"|"+(s.col||"") : ctl==="UNICO" ? s.id : s.cod;
+    if(seen.has(key)) continue; seen.add(key); out.push({s, ctl, lbl: ctl==="UNICO" ? s.id : s.cod});
+  }
+  const total = out.length;
+  out = NPK.rank(out, q, x=>x.lbl).slice(0, 40);
+  if(!out.length) return `<div class="note" style="padding:10px 16px">Sin resultados${addSolo&&cm?" con la marca del cliente: desmarca el filtro para ver todas":""}. <button class="btn btn-gold btn-sm" data-altaavio>+ Registrar "${esc(addQ.trim())}" como avío nuevo</button></div>`;
+  return `<div class="scroll" style="max-height:52vh;border-top:1px solid var(--line)">${total>out.length?`<div class="note" style="padding:6px 16px">Mostrando ${out.length} de ${total}: escribe más para acotar.</div>`:""}<table><tbody>${out.map(({s,ctl,lbl})=>{ const a = IX.av[s.cod]||{d:""};
+    const txt = ctl==="TALLA" ? a.d + " · " + comboLabel(s) + " · un SKU por talla" : ctl==="UNICO" ? (s.ext||s.d) : a.d + " · elige " + (ctl==="COLOR"?"colores":"medidas") + " en la fila";
+    return `<tr><td class="code">${NPK.hl(lbl, addQ)}</td><td>${NPK.hl(txt, addQ)}</td><td><span class="badge ${CTL[ctl][2]}">${CTL[ctl][1]}</span></td><td class="nw">${recien.has(s.id)?`<span class="badge b-ok">✓ agregado</span> `:enBom(s)?`<span class="badge b-gray">ya en BOM</span> `:""}<button class="btn btn-teal btn-sm" data-addsku="${s.id}">Agregar</button></td></tr>`; }).join("")}</tbody></table></div>`;
+}
+function renderCon(){
+  const st = P.estilos.find(s=>s.c===selStyle) || P.estilos[0]; selStyle = st.c;
+  const rows = P.bom[st.c], falt = rows.reduce((a,r)=>a+faltantesDe(st,r).length,0);
+  const sinCod = st.tl.filter(x=>!x[3]).map(x=>x[0]);
+  const n = st.tl.length;
+  return `<div class="cons${listaOff?" off":""}" id="conEd">
+   <div class="panel slist">${P.estilos.map(s=>`<button class="sitem" data-pick="${s.c}" aria-current="${s.c===selStyle}">
+      <span class="thumb">${s.img?`<img src="${imgUrl(s,120)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`:""}</span>
+      <span><span class="code">${s.c}</span><span class="d">${esc(s.d)}</span></span>${bomBadge(s.c)}</button>`).join("")}
+   </div>
+   <div class="panel">
+    <div class="ed-top">
+      <button class="btn btn-sm" data-lista title="${listaOff?"Mostrar lista de estilos":"Ocultar lista de estilos"}" style="align-self:flex-start">${listaOff?"▶ Estilos":"◀ Ocultar lista"}</button>
+      ${foto(st,"photo sm")}
+      <div style="flex:1;min-width:240px"><h2 style="margin:0;font-size:16px">${st.c} · ${esc(st.d)}</h2>
+        <div class="note">Molde ${esc(st.m)} · Pedido ${sumProd(st)} · <b style="color:var(--navy)">Prog. ${sumProg(st)}</b> · Calcula con ${A.baseQty==="PROD"?"UNDS. PROD.":"UNDS. PROG."} + merma de familia</div>
+        ${A.baseQty!=="PROD" && sinProg(st).length?`<div class="warnbox" style="margin:6px 0 0;padding:5px 10px">Sin UNDS. PROG. en ${esc(sinProg(st).join(", "))}: esas tallas no generan requerimiento hasta que Planeamiento las programe.</div>`:""}
+        <div class="note clamp" style="margin-top:4px;color:var(--ink)" title="${esc(st.obs)}">${esc(st.obs)}</div>
+        ${sinCod.length?`<div class="warnbox" style="margin:10px 0 0">Tallas sin código T### en DETALLE_TALLAS: ${esc(sinCod.join(", "))}. No se puede resolver su SKU por talla.</div>`:""}</div>
+    </div>
+    ${tplPanel(st)}
+    <table class="bomt">
+      <thead><tr><th class="tdnro">#</th><th>Avío · proceso</th><th>SKU y consumo</th>${st.tl.map(x=>`<th class="tht" title="${esc(x[3]||"sin código")}">${esc(x[0])}<span title="# Programada · pedido ${x[1]}" class="thprog">${x[2]==null ? "—" : x[2]}</span></th>`).join("")}<th class="num">Total</th><th>Estado</th><th></th></tr></thead>
+      <tbody>${rows.length ? rows.map((r,i)=>rowLinea(st,r,i+1)).join("") : `<tr><td colspan="${n+6}" class="empty">Sin avíos. Búscalos abajo, aplica una plantilla o copia del histórico por molde.</td></tr>`}</tbody>
+    </table>
+    <div class="foot" style="border-bottom:0">
+      <input class="inp" id="addQ" data-addq placeholder="Agregar avío: busca por código, descripción, marca, talla, color…" style="width:380px" value="${esc(addQ)}" autocomplete="off">
+      <label class="note" style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" class="chk" data-addsolo ${addSolo?"checked":""}> Solo marca del cliente y genéricas</label>
+      <button class="btn btn-gold btn-sm" data-altaavio style="margin-left:auto">+ Registrar avío nuevo</button>
+    </div>
+    <div id="addRes">${resultadosAdd()}</div>
+    <div class="foot">
+      <button class="btn btn-sm" data-tpl="save">Guardar como plantilla</button>
+      <button class="btn btn-sm" data-tpl="apply">Aplicar plantilla</button>
+      <button class="btn btn-sm" data-hist>Copiar de histórico (${esc(st.m)})</button>
+      ${falt?`<button class="btn btn-sm" data-crearfalt style="border-color:var(--danger);color:var(--danger)">Crear ${falt} SKU faltantes</button>`:""}
+      <button class="btn btn-teal" data-savebom style="margin-left:auto" ${isDirty(st.c)?"":"disabled"}>Guardar BOM</button>
+    </div>
+   </div></div>`;
+}
+function celdasTalla(st, r, u, ui){
+  const esT = ctlDe(r.cod)==="TALLA";
+  if(u.modo==="U" && !esT) return `<td colspan="${st.tl.length}"></td>`;
+  const un = (IX.av[r.cod]||{}).un || "";
+  return porTallaU(st, r, u).map(f=>`<td class="tdt">
+      ${u.modo==="T"?`<div class="mini"><input class="inp n xs" type="number" step="any" min="0" data-li="ct" data-t="${esc(f.tc)}" data-i="${ui}" data-id="${r.id}" value="${f.tc?((u.obj.ct||{})[f.tc]??0):0}" ${f.tc?"":"disabled"} title="C.U. ${esc(f.tn)}"></div>`:""}
+      <div class="qv" id="q${r.id}_${ui}_${esc(f.tc)}">${f.q>0 && f.val ? fq(f.val, un) : "—"}</div>
+      ${esT?(f.s?`<div class="skuc">${f.s.id}</div>`:`<div class="miss" style="font-size:11px">falta SKU</div>`):""}</td>`).join("");
+}
+const modoSel = (u, ui, rid) => `<select class="inp sm" data-modo="${ui}" data-id="${rid}" title="Cálculo del consumo"><option value="U" ${u.modo==="U"?"selected":""}>Consumo único</option><option value="T" ${u.modo==="T"?"selected":""}>Consumo por talla</option></select>`;
+const unitVal = (st, r, u) => u.modo==="U" && ctlDe(r.cod)!=="TALLA" ? totalU(st, r, u).val : porTallaU(st, r, u).reduce((x,f)=>x+(f.s?f.val:0),0);
+const attrSku = s => s ? (skuDet(s)==="—" ? "Sin atributos" : skuDet(s)) : "";
+function rowLinea(st, r, nro){
+  const a = IX.av[r.cod] || {d:"(avío no existe)", un:""}, c = calc(st, r), merma = mermaDe(r.cod), k = CTL[c.ctl], un = (a.un||"").toLowerCase();
+  const req = c.lines.reduce((x,l)=>x+l.req,0), lista = porMarca(skusAv(r.cod)), us = unidades(r), n = st.tl.length;
+  const num = (attrs, v) => `<input class="inp n sm cu" type="number" step="any" min="0" ${attrs} value="${v}" title="Consumo unitario">`;
+  const dl = "dl" + r.id, refS = IX.sku[r.ref];
+  const mermaTxt = "";
+  /* Columna C.U.: en consumo único lleva el campo; en consumo por talla, la etiqueta alineada con los campos de cada talla. Debajo, la merma. */
+  const cuIn = (modo, attrs, val) => modo==="U" ? num(attrs, val ?? 1) : "";
+  const estado = c.missing.length ? `<span class="miss">${c.ctl==="TALLA" ? "Faltan "+c.missing.length+" tallas" : c.ctl==="MEDIDA" && IX.sku[r.ref] ? "Faltan "+faltantesDe(st, r).length+" SKU" : "Sin SKU"}</span>` : `<span class="badge b-ok">${c.lines.length} SKU</span>`;
+  const nroCell = rs => `<td rowspan="${rs}" class="tdnro">${nro||""}</td>`;
+  const avioCell = rs => `${nroCell(rs)}<td rowspan="${rs}" class="avc"><div class="avhd"><span class="code">${r.cod}</span><span class="badge ${k[2]}">${k[1]}</span><span class="avmeta" title="Unidad de medida (${esc(a.un)})">${esc(IX.un[a.un] && IX.un[a.un].n ? IX.un[a.un].n : a.un)}</span>${merma?`<span class="avmeta mer">merma ${Math.round(merma*100)}%</span>`:""}</div><span class="est">${esc(a.d)}</span>
+      <div class="procsel"><select class="inp sm" data-lf="proc" data-id="${r.id}" title="Proceso">${opcLista(A.procesos, r.proc, procLabel)}</select>
+      <select class="inp sm" data-lf="para" data-id="${r.id}" title="Para"><option value="">Para: —</option>${opcLista(A.paras, r.para, c=>c)}</select></div></td>`;
+  const finCells = rs => `<td rowspan="${rs}" class="vt">${estado}</td><td rowspan="${rs}" class="vt"><button class="del" data-del="${r.id}" aria-label="Quitar avío">×</button></td>`;
+  const totCell = (u, ui) => `<td class="num nw vt"><b id="ut${r.id}_${ui}">${fq(unitVal(st, r, u), a.un)}</b></td>`;
+  if(!lista.length) return `<tr class="lr">${avioCell(1)}<td colspan="${n+2}"><div class="miss">Este avío no tiene SKU activos: créalo en Maestro › Nuevo SKU.</div></td>${finCells(1)}</tr>`;
+  if(c.ctl==="UNICO") return `<tr class="lr">${avioCell(1)}<td class="skc">${skuBtn(r.id+"|ref|", r.ref, attrSku(refS))}
+      <div class="colrow" style="margin-top:4px">${modoSel(us[0], "L", r.id)} ${cuIn(us[0].modo, `data-lf="cons" data-id="${r.id}"`, r.cons)}</div></td>${celdasTalla(st, r, us[0], "L")}${totCell(us[0], "L")}${finCells(1)}</tr>`;
+  if(c.ctl==="TALLA"){ const combos = porMarca(combosTalla(r.cod));
+    return `<tr class="lr">${avioCell(1)}<td class="skc">${skuBtn(r.id+"|ref|", refS ? comboLabel(refS) : "", refS ? "SKU según la talla · " + combos.length + " combinaciones" : "", "Elegir combinación…")}
+      <div class="colrow" style="margin-top:4px">${modoSel(us[0], "L", r.id)} ${cuIn(us[0].modo, `data-lf="cons" data-id="${r.id}"`, r.cons)}</div></td>${celdasTalla(st, r, us[0], "L")}${totCell(us[0], "L")}${finCells(1)}</tr>`; }
+  if(c.ctl==="MEDIDA"){
+    const mx = matrizMedida(st, r), meds = medidasDe(r), cols = coloresDe(r), rs = 1 + mx.length + 1, modo = r.modo || "T";
+    const cfg = `<tr class="lr">${avioCell(rs)}<td class="skc">${skuBtn(r.id+"|ref|", r.ref, refS ? (nomMar(refS.mar)||"Genérica") + (refS.col ? " · " + colorDe(refS) : "") : "")}
+        <div class="colrow" style="margin-top:4px">${modoSel({modo}, "L", r.id)} ${cuIn(modo, `data-lf="cons" data-id="${r.id}"`, r.cons)}</div></td>
+      ${st.tl.map(([tn,,,tc])=>`<td class="tdt">${modo==="T" ? `<div class="mini"><input class="inp n xs" type="number" step="any" min="0" data-mc="${esc(tc)}" data-id="${r.id}" value="${tc?((r.ct||{})[tc]??0):0}" ${tc?"":"disabled"} title="C.U. ${esc(tn)}"></div>` : ""}
+        <select class="inp xs msel" data-mt="${esc(tc)}" data-id="${r.id}" ${tc?"":"disabled"} title="Medida de ${esc(tn)}"><option value="">—</option>${meds.map(s=>`<option value="${s.med}" ${s.med===(r.med||{})[tc]?"selected":""}>${esc(nomMed(s.med)||s.med)}</option>`).join("")}</select></td>`).join("")}
+      <td class="num nw vt"><b id="rq${r.id}">${fq(req, a.un)}</b></td>${finCells(rs)}</tr>`;
+    const filas = mx.map((f,i)=>`<tr class="subr"><td class="skc subl"><div class="colrow"><span class="subn">${i+1}</span>
+        <select class="inp sm" data-mcol="${i}" data-id="${r.id}" style="max-width:280px">${cols.some(s=>(s.col||"")===(f.col||"")) ? "" : `<option value="${esc(f.col)}" selected>${esc(f.col||"Sin color")} (sin SKU)</option>`}${cols.map(s=>`<option value="${esc(s.col||"")}" ${(s.col||"")===(f.col||"")?"selected":""}>${esc(colorDe(s)||"Sin color")}</option>`).join("")}</select>
+        ${mx.length>1?`<button class="del" data-mdel="${i}" data-id="${r.id}" title="Quitar color">×</button>`:""}</div></td>
+      ${f.celdas.map(cl=>`<td class="tdt">${cl.q>0 && cl.cons>0 ? (cl.s ? `<div class="skuc">${cl.s.id}</div><b>${fq(cl.val, cl.s.un)}</b>` : `<span class="miss" style="font-size:11px">falta SKU</span>`) : `<span class="note">—</span>`}</td>`).join("")}
+      <td class="num nw vt"><b>${fq(f.celdas.reduce((x,cl)=>x+cl.val,0), a.un)}</b></td></tr>`).join("");
+    return cfg + filas + `<tr class="subr"><td colspan="${n+2}" class="subl"><button class="btn btn-sm" data-maddcol="${r.id}">+ Agregar color</button></td></tr>`;
+  }
+  const nom = c.ctl==="COLOR" ? "color" : "medida", rs = r.items.length + 1;
+  return r.items.map((it,i)=>{ const sk = IX.sku[it.sku];
+    return `<tr class="${i?"subr":"lr"}">${i===0?avioCell(rs):""}<td class="skc subl"><div class="colrow"><span class="subn">${i+1}</span>${skuBtn(r.id+"|item|"+i, it.sku, attrSku(sk))}${r.items.length>1?`<button class="del" data-idel="${i}" data-id="${r.id}" title="Quitar ${nom}">×</button>`:""}</div>
+      <div class="colrow" style="margin-top:4px">${modoSel(us[i], i, r.id)} ${cuIn(us[i].modo, `data-li="cons" data-i="${i}" data-id="${r.id}"`, it.cons)}</div></td>${celdasTalla(st, r, us[i], i)}${totCell(us[i], i)}${i===0?finCells(rs):""}</tr>`; }).join("")
+    + `<tr class="subr"><td colspan="${n+2}" class="subl"><button class="btn btn-sm" data-iadd="${r.id}">+ Agregar ${nom}</button></td></tr>`;
+}
+function refrescarLinea(r){
+  const st = curSt(), a = IX.av[r.cod] || {};
+  const q = $("rq"+r.id); if(q) q.textContent = fq(reqLinea(st, r), a.un);
+  unidades(r).forEach((u,i)=>{ const ui = ctlDe(r.cod)==="COLOR" || ctlDe(r.cod)==="MEDIDA" ? i : "L"; const e = $("ut"+r.id+"_"+ui); if(e) e.textContent = fq(unitVal(st, r, u), a.un);
+    porTallaU(st, r, u).forEach(f=>{ const c = $("q"+r.id+"_"+ui+"_"+f.tc); if(c) c.textContent = f.q>0 && f.val ? fq(f.val, a.un) : "—"; }); });
+  toggleSave();
+}
+
+/* --- Plantillas en editor --- */
+function nextTpl(cli){
+  const pre = "PLA-"+String(cli).split("-")[0]+"-";
+  const max = A.plantillas.filter(p=>p.code.startsWith(pre)).reduce((m,p)=>Math.max(m, parseInt(p.code.slice(pre.length))||0), 0);
+  return pre + String(max+1).padStart(3,"0");
+}
+const cliName = c => (A.clientes.find(x=>x.c===c)||{n:c}).n;
+let prnProc = null, prnSty = null;
+function printPanel(){
+  const usados = [...new Set(P.estilos.flatMap(s=>(P.bom[s.c]||[]).map(r=>r.proc)))];
+  const orden = (A.procesos||[]).map(p=>p.c).filter(c=>usados.includes(c)).concat(usados.filter(c=>!existeProc(c)));
+  if(!prnProc) prnProc = new Set(orden);
+  if(!prnSty) prnSty = new Set(P.estilos.filter(s=>(P.bom[s.c]||[]).length).map(s=>s.c));
+  return `<div class="ppanel"><div style="display:flex;gap:12px;align-items:center"><strong>Imprimir BOM por estilo · 2 estilos por A4 horizontal</strong>
+      <button class="btn btn-sm" data-tpl="close" style="margin-left:auto">Cerrar</button></div>
+    <div class="note" style="margin-top:6px">Procesos que se imprimen</div>
+    <div class="chips2">${orden.length?orden.map(p=>`<label><input type="checkbox" class="chk" data-pproc="${esc(p)}" ${prnProc.has(p)?"checked":""}>${esc(procLabel(p))}</label>`).join(""):`<span class="note">Ningún estilo tiene avíos.</span>`}</div>
+    <div class="note">Estilos</div>
+    <div class="chips2">${P.estilos.map(s=>`<label><input type="checkbox" class="chk" data-psty="${s.c}" ${prnSty.has(s.c)?"checked":""} ${(P.bom[s.c]||[]).length?"":"disabled"}>${s.c}</label>`).join("")}</div>
+    <button class="btn btn-gold btn-sm" data-doprint>Imprimir (${prnSty.size} estilos · ${Math.ceil(prnSty.size/2)} hojas)</button>
+    ${P.estilos.some(s=>isDirty(s.c))?`<span class="note" style="margin-left:10px;color:var(--danger)">Hay cambios sin guardar: se imprime lo que ves en pantalla.</span>`:""}</div>`;
+}
+function opcLista(lista, actual, lab){
+  const act = (lista||[]).filter(x=>x.act || x.c===actual);
+  const extra = actual && !act.some(x=>x.c===actual) ? `<option value="${esc(actual)}" selected>${esc(actual)} (no está en CONFIG)</option>` : "";
+  return extra + act.map(x=>`<option value="${esc(x.c)}" ${x.c===actual?"selected":""}>${esc(lab(x.c))}${x.act?"":" (inactivo)"}</option>`).join("");
+}
+const nfmt = (n,un) => entera(un) && Math.abs(n-Math.round(n))<1e-9 ? String(Math.round(n)) : r2(n).toLocaleString("es-PE",{maximumFractionDigits:2});
+function tarjeta(st){
+  const tl = st.tl;
+  const rows = (P.bom[st.c]||[]).filter(r=>prnProc.has(r.proc));
+  const grupos = [...new Set((A.procesos||[]).map(p=>p.c).filter(c=>rows.some(r=>r.proc===c)).concat(rows.map(r=>r.proc)))];
+  const tablaQ = (lines0, tl, un) => { const lines = lines0.filter(l=>l.porTalla); return lines.length && tl.length>1 ? `<table class="pst" style="margin-top:.8mm"><tr><td>SKU</td>${tl.map(x=>`<td>${esc(x[0])}</td>`).join("")}</tr>${lines.map(l=>`<tr><td>${esc(l.item)}</td>${tl.map(x=>`<td><b>${nfmt((l.porTalla||{})[x[0]]||0,un)}</b></td>`).join("")}</tr>`).join("")}</table>` : ""; };
+  const chips = (lines, un) => lines.map(l=>{ const s = IX.sku[l.item]; const d = s ? skuDet(s) : ""; return `<span class="chip"><b>${esc(l.item)}</b>${d && d!=="—"?" "+esc(d):""} · <b>${nfmt(l.req,un)} ${un}</b></span>`; }).join("");
+  const cuerpo = grupos.map(g=>`<div class="pgh">${esc(procLabel(g))}</div>` + rows.filter(r=>r.proc===g).map(r=>{
+    const a = IX.av[r.cod] || {d:r.cod, un:""}, merma = mermaDe(r.cod), c = calc(st, r), [tc, tn] = CTL[c.ctl], un = a.un;
+    const tot = c.lines.reduce((x,l)=>x+l.req,0);
+    let cons = "", sk = "";
+    const consTxt = o => (o.modo || modoDef(c.ctl))==="T" ? tl.map(x=>esc(x[0])+" "+nfmt(Number((o.ct||{})[x[3]])||0,"x")).join(" · ") : nfmt(Number(o.cons)||0,"x") + " × " + totalProg(st) + " prendas";
+    if(c.ctl==="UNICO"){ cons = consTxt(r); sk = c.lines.length ? chips(c.lines, un) + tablaQ(c.lines, tl, un) : `<span class="miss">SKU no definido</span>`; }
+    if(c.ctl==="TALLA"){ cons = nfmt(Number(r.cons)||0,"x") + " por prenda";
+      const cel = tl.map(([n,,,tcod])=>{ const s = resolverTalla(r,tcod), l = s && c.lines.find(x=>x.item===s.id); return {s, v: l && l.porTalla ? (l.porTalla[n]||0) : 0}; });
+      sk = `<table class="pst"><tr><td>Código</td>${cel.map(x=>`<td>${x.s?esc(x.s.id):`<span class="miss">falta</span>`}</td>`).join("")}</tr><tr><td>Cant.</td>${cel.map(x=>`<td><b>${nfmt(x.v,un)}</b></td>`).join("")}</tr></table>`; }
+    if(c.ctl==="COLOR"){ cons = r.items.map(it=>{ const s = IX.sku[it.sku]; return (s ? esc(colorDe(s)||s.id) : "?") + " → " + consTxt(it); }).join("<br>"); sk = chips(c.lines, un) + tablaQ(c.lines, tl, un); }
+    if(c.ctl==="MEDIDA"){ const mx = matrizMedida(st, r);
+      sk = `<table class="pst pmx"><tr><td>Medida</td>${tl.map(x=>{ const s0 = mx[0] && mx[0].celdas.find(cl=>cl.tc===x[3]) || {}; return `<td>${s0.s ? `<b>${esc(s0.s.id)}</b><br>` : ""}${esc([nomMar((IX.sku[r.ref]||{}).mar), nomMed(s0.med||"")].filter(Boolean).join(" · ")) || "—"}</td>`; }).join("")}</tr>
+        ${mx.map(f=>`<tr><td>${esc(f.col ? colorDe(skusAv(r.cod).find(s=>(s.col||"")===f.col) || {col:f.col}) : "Sin color")}</td>${f.celdas.map(cl=>`<td>${cl.s ? `<b>${nfmt(cl.val,un)}</b>` : (cl.q>0 && cl.cons>0 ? `<span class="miss">falta</span>` : "")}</td>`).join("")}</tr>`).join("")}</table>`; }
+    return `<div class="pi"><span class="cb"></span><div><span class="pn">${esc(a.d)}</span><span class="tg ${tc}">${tn}</span>${merma?` <span style="font-size:7.5px">+${Math.round(merma*100)}% merma</span>`:""}${r.para?`<span class="para">${esc(r.para)}</span>`:""}</div>
+      <div class="psk">${sk}</div></div>`;
+  }).join("")).join("");
+  const img = st.img ? `<img src="${imgUrl(st,200)}" alt="${st.c}" referrerpolicy="no-referrer" loading="eager" decoding="sync">` : `<span class="noimgp">Sin imagen</span>`;
+  return `<div class="pc"><div class="pch">${img}<div><b>${st.c}</b> · ${esc(st.d)}<br>Molde ${esc(st.m)} · ${P.pe} · ${esc(P.marca)}</div></div>
+    <table class="pt"><tr><th>Talla</th>${tl.map(x=>`<th>${esc(x[0])}</th>`).join("")}</tr>
+      <tr><td># Pedido (100%)</td>${tl.map(x=>`<td>${x[1]}</td>`).join("")}</tr>
+      <tr><td># Programada</td>${tl.map(x=>`<td>${x[2]==null?"—":x[2]}</td>`).join("")}</tr></table>
+    ${cuerpo || `<div class="note" style="margin-top:2mm">Sin avíos en los procesos elegidos.</div>`}</div>`;
+}
+function imprimirConsumos(){
+  const lista = P.estilos.filter(s=>prnSty.has(s.c));
+  if(!lista.length) return toast("Elige al menos un estilo.", true);
+  if(!prnProc.size) return toast("Elige al menos un proceso.", true);
+  const hoy = new Date().toLocaleDateString("es-PE"), procs = [...prnProc].join(", ");
+  let h = "";
+  for(let i=0;i<lista.length;i+=2){
+    h += `<table class="pg"><thead><tr><td colspan="2"><div class="phd"><span>nuna cotton · BOM de avíos por estilo · ${P.pe} · ${esc(P.marca)}</span><span>Procesos: ${esc(procs)} · ${hoy} · Hoja ${i/2+1}/${Math.ceil(lista.length/2)}</span></div></td></tr></thead>
+       <tbody><tr><td class="pgc">${tarjeta(lista[i])}</td><td class="pgc">${lista[i+1] ? tarjeta(lista[i+1]) : ""}</td></tr></tbody></table>`;
+  }
+  $("printArea").innerHTML = h;
+  document.body.classList.add("printing");
+  const imgs = [...document.querySelectorAll("#printArea img")];
+  const pend = imgs.filter(i=>!i.complete);
+  if(pend.length) toast("Preparando imágenes para imprimir…");
+  /* espera a que carguen las fotos (máx. 10 s); las que fallan se reemplazan por un aviso */
+  Promise.race([
+    Promise.all(pend.map(i=>new Promise(ok=>{ i.addEventListener("load", ok, {once:true}); i.addEventListener("error", ok, {once:true}); }))),
+    new Promise(ok=>setTimeout(ok, 10000))
+  ]).then(()=>{
+    imgs.forEach(i=>{ if(!i.complete || !i.naturalWidth){ const sp = document.createElement("span"); sp.className = "noimgp"; sp.textContent = "Imagen no disponible"; i.replaceWith(sp); } });
+    setTimeout(()=>window.print(), 150);
+  });
+}
+window.addEventListener("afterprint", ()=>document.body.classList.remove("printing"));
+
+function tplPanel(st){
+  if(tplMode==="print") return printPanel();
+  if(tplMode==="save"){
+    if(!P.bom[st.c].length) return `<div class="tplbox"><span class="buy">Carga avíos antes de guardar una plantilla.</span> <button class="btn btn-sm" data-tpl="close">Cerrar</button></div>`;
+    const cli = P.cli || (A.clientes[0]||{}).c;
+    return `<div class="tplbox"><strong>Guardar avíos de ${st.c} como plantilla</strong>
+      <div class="form" style="padding:10px 0 0">
+        <label>Cliente<select class="inp" id="tCli" data-tcli>${A.clientes.map(c=>`<option value="${c.c}" ${c.c===cli?"selected":""}>${c.c} · ${esc(c.n)}</option>`).join("")}</select></label>
+        <label>Código de plantilla<input class="inp" id="tCode" value="${nextTpl(cli)}" style="width:140px;text-transform:uppercase"></label>
+        <label style="flex:1;min-width:220px">Descripción<input class="inp" id="tDesc" value="${esc(st.d)}"></label>
+        <label>Molde ref.<input class="inp" value="${esc(st.m)}" disabled style="width:110px"></label>
+        <button class="btn btn-teal btn-sm" data-tsave>Guardar plantilla</button><button class="btn btn-sm" data-tpl="close">Cancelar</button>
+      </div></div>`;
+  }
+  if(tplMode==="apply"){
+    const list = A.plantillas.filter(p=>tplAll || !P.cli || p.cli===P.cli);
+    return `<div class="tplbox"><div style="display:flex;gap:12px;align-items:center;margin-bottom:8px"><strong>Aplicar plantilla a ${st.c}</strong>
+      <label class="note" style="display:flex;gap:6px;align-items:center"><input type="checkbox" class="chk" data-tall ${tplAll?"checked":""}> Todos los clientes</label>
+      <button class="btn btn-sm" data-tpl="close" style="margin-left:auto">Cerrar</button></div>
+      <div class="scroll"><table><thead><tr><th>Código</th><th>Cliente</th><th>Descripción</th><th>Molde ref.</th><th class="num">Avíos</th><th></th></tr></thead>
+      <tbody>${list.length?list.map(p=>`<tr><td class="code">${p.code}</td><td class="nw">${esc(cliName(p.cli))}</td><td>${esc(p.desc)}</td>
+        <td class="nw">${esc(p.molde)}${p.molde===st.m?' <span class="badge b-ok">mismo molde</span>':""}</td><td class="num">${p.rows.length}</td>
+        <td><button class="btn btn-teal btn-sm" data-tapply="${p.code}">Aplicar</button></td></tr>`).join("")
+        :`<tr><td colspan="6" class="empty">No hay plantillas para este cliente.</td></tr>`}</tbody></table></div></div>`;
+  }
+  return "";
+}
+
+/* --- 3 Reserva y compra --- */
+function filasCompra(){
+  return lineasPE().map(l=>{ const s = stk(l.item), sk = IX.sku[l.item]||{}; const pend = Math.max(0, l.req - s.salPE - s.resPE); let c = Math.max(0, pend - Math.max(0,s.disp)); c = entera(l.und)?Math.ceil(c-1e-9):r2(c); return {...l, s, pend, comprar:c, ubic:sk.ubic||"", prov:sk.prov||""}; });
+}
+function renderRes(){
+  const rows = filasCompra(), dirty = P.estilos.filter(s=>isDirty(s.c)), sin = P.estilos.filter(s=>!saved(s.c)), falt = faltantesPE();
+  const vis = soloComprar ? rows.filter(x=>x.comprar>0) : rows;
+  return `
+  ${dirty.length?`<div class="warnbox">Guarda el BOM de ${dirty.map(s=>s.c).join(", ")} antes de reservar o despachar.</div>`:""}
+  ${sin.length?`<div class="warnbox">${sin.map(s=>s.c).join(", ")} sin BOM guardado: su requerimiento no está incluido.</div>`:""}
+  ${falt.length?`<div class="warnbox">${falt.length} combinaciones sin SKU (no entran al requerimiento). Créalas en Consumo de avíos.</div>`:""}
+  <div class="panel">
+    <div class="ph">
+      <div class="kpi"><strong>${rows.length}</strong>SKU</div>
+      <div class="kpi"><strong style="color:var(--teal)">${rows.filter(x=>x.pend<=0).length}</strong>cubiertos</div>
+      <div class="kpi"><strong style="color:var(--danger)">${rows.filter(x=>x.comprar>0).length}</strong>con saldo a comprar</div>
+      <label class="note" style="display:flex;gap:6px;align-items:center;margin-left:auto"><input type="checkbox" class="chk" data-solo ${soloComprar?"checked":""}> Solo saldo a comprar</label>
+      <button class="btn btn-navy btn-sm" data-reservar ${dirty.length||!rows.length||P.status==="CERRADO"?"disabled":""}>Reservar disponible</button>
+      <button class="btn btn-sm" data-liberar ${!rows.some(x=>x.s.resPE>0)?"disabled":""}>Liberar reserva</button>
+      <button class="btn btn-sm" data-tpl="print" ${P.estilos.some(s=>(P.bom[s.c]||[]).length)?"":"disabled"}>Imprimir BOM x estilo</button>
+      <button class="btn btn-gold btn-sm" data-xls ${!rows.length?"disabled":""}>Exportar Excel</button>
+    </div>
+    ${tplMode==="print" ? printPanel() : ""}
+    <div class="scroll"><table>
+      <thead><tr><th>SKU</th><th>Descripción</th><th>Detalle</th><th>UN</th><th class="num">Requerido</th><th class="num">Stock actual</th><th class="num">Stock reserva</th><th class="num">Reservado PE</th><th class="num">Atendido PE</th><th class="num">Rqto. saldo a comprar</th><th></th></tr></thead>
+      <tbody>${vis.length?vis.map(x=>`<tr>
+        <td class="code">${esc(x.item)}</td><td>${esc(x.desc)}<span class="est">${esc(x.est)}</span></td><td>${esc(x.det)}</td><td>${x.und}</td>
+        <td class="num">${fq(x.req,x.und)}</td><td class="num">${fq(x.s.act,x.und)}</td><td class="num">${fq(x.s.res,x.und)}</td>
+        <td class="num">${x.s.resPE?`<span class="cov">${fq(x.s.resPE,x.und)}</span>`:"—"}</td><td class="num">${x.s.salPE?fq(x.s.salPE,x.und):"—"}</td>
+        <td class="num">${x.comprar>0?`<span class="buy">${fq(x.comprar,x.und)}</span>`:`<span class="cov">${x.pend<=0?"Cubierto":"Disponible"}</span>`}</td>
+        <td class="nw">${x.pend>0?`<button class="btn btn-sm" data-ingrap="${esc(x.item)}" data-sug="${x.comprar>0?x.comprar:""}" title="Registrar ingreso de este SKU">+ Ingreso</button>`:""}</td></tr>`).join("")
+        :`<tr><td colspan="11" class="empty">${rows.length?"Nada por comprar.":"Guarda el BOM de al menos un estilo."}</td></tr>`}</tbody>
+    </table></div>
+    <p class="note" style="padding:0 16px 12px">Requerido incluye la merma de la familia. Reservar aparta el disponible para lo pendiente. Saldo a comprar = pendiente − disponible.</p>
+  </div>`;
+}
+
+/* --- 4 Salida --- */
+function renderSal(){
+  const ls = lineasPE(), dirty = P.estilos.some(s=>isDirty(s.c));
+  const rows = ls.map(l=>{ const s = stk(l.item), sk = IX.sku[l.item]||{}; const pend = Math.max(0, r2(l.req - s.salPE)); const max = r2(Math.min(s.act, s.resPE + Math.max(0,s.disp))); const def = entera(l.und) ? Math.floor(Math.min(pend, s.resPE)+1e-9) : r2(Math.min(pend, s.resPE)); return {...l, s, pend, max, def, ubic:sk.ubic||""}; }).filter(x=>x.pend>0)
+    .sort((a,b)=>(a.ubic||"ZZ").localeCompare(b.ubic||"ZZ","es",{numeric:true}));
+  const salidas = (MOVS||[]).filter(m=>m.tipo==="SALIDA" && m.pe===P.pe);
+  return `
+  ${dirty?`<div class="warnbox">Hay consumos sin guardar. Guarda el BOM antes de despachar.</div>`:""}
+  <div class="panel">
+    <div class="ph"><h2>Generar salida de avíos · ${P.pe}</h2><span class="note">Ordenado por ubicación para el picking. Por defecto despacha lo reservado.</span></div>
+    <div class="form">
+      <label>Entregado a<select class="inp" id="sDest" data-sdest>${destinos().map(d=>`<option ${d===salDest?"selected":""}>${esc(d)}</option>`).join("")}</select></label>
+      <label style="flex:1;min-width:220px">Observación<input class="inp" id="sObs" data-sobs value="${esc(salObs)}" placeholder="Ej. avíos para corte 1"></label>
+      <button class="btn btn-sm" data-fill="res">Llenar con reservado</button>
+      <button class="btn btn-sm" data-fill="max">Llenar con máximo</button>
+      <button class="btn btn-sm" data-fill="cero">Limpiar</button>
+    </div>
+    <div class="scroll"><table>
+      <thead><tr><th>Ubicación</th><th>SKU</th><th>Descripción</th><th>UN</th><th class="num">Requerido</th><th class="num">Atendido</th><th class="num">Reservado PE</th><th class="num">Stock actual</th><th class="num">Cant. a despachar</th></tr></thead>
+      <tbody>${rows.length?rows.map(x=>`<tr>
+        <td class="code">${esc(x.ubic)||"—"}</td><td class="code">${esc(x.item)}</td><td>${esc(x.desc)}<span class="est">${esc(x.det)}</span></td><td>${x.und}</td>
+        <td class="num">${fq(x.req,x.und)}</td><td class="num">${x.s.salPE?fq(x.s.salPE,x.und):"—"}</td><td class="num">${x.s.resPE?fq(x.s.resPE,x.und):"—"}</td><td class="num">${fq(x.s.act,x.und)}</td>
+        <td class="num"><input class="inp n" type="number" min="0" step="${entera(x.und)?1:"any"}" data-sal="${esc(x.item)}" data-res="${x.def}" data-max="${Math.min(x.max,x.pend)}" value="${x.def}"></td></tr>`).join("")
+        :`<tr><td colspan="9" class="empty">${ls.length?"Pedido atendido: no hay avíos pendientes de salida.":"Guarda el BOM de al menos un estilo."}</td></tr>`}</tbody>
+    </table></div>
+    <div class="foot"><span class="note">La salida debita el stock actual y descuenta la reserva del pedido.</span>
+      <button class="btn btn-teal" data-salida style="margin-left:auto" ${dirty||!rows.length||P.status==="CERRADO"?"disabled":""}>Generar salida</button></div>
+  </div>
+  ${salidas.length?`<div class="panel"><div class="ph"><h2>Salidas registradas</h2></div><div class="scroll"><table>
+    <thead><tr><th>Documento</th><th>Fecha</th><th>SKU</th><th class="num">Cantidad</th><th>Destino</th><th>Usuario</th></tr></thead>
+    <tbody>${salidas.map(m=>`<tr><td class="code">${m.doc}</td><td class="nw">${m.fecha}</td><td>${esc(m.item)}</td><td class="num">${fq(m.cant,m.und)} ${m.und}</td><td>${esc(m.dest)}</td><td class="note">${esc(m.usr)}</td></tr>`).join("")}</tbody></table></div></div>`:""}`;
+}
+
+/* ================= Maestro ================= */
+function renderMae(){
+  const M = A.maestro, S = STOCK || {};
+  const sum = list => list.reduce((a,s)=>{ const x = S[s.id]||{}; ["ini","ing","sal","act","res","disp"].forEach(k=>a[k]+=x[k]||0); return a; }, {ini:0,ing:0,sal:0,act:0,res:0,disp:0});
+  const q = maeQ.trim();
+  let avs = M.avios.filter(a=>(!maeF || a.fam===maeF) && (!q || NPK.match(a.c+" "+a.d+" "+((IX.fam[a.fam]||{}).n||""), q) || (IX.skusDe[a.c]||[]).some(s=>NPK.match(s.id+" "+(s.ext||s.d), q))));
+  if(q){ avs = NPK.rank(avs, q, a=>a.c); avs.forEach(a=>{ if((IX.skusDe[a.c]||[]).some(s=>NPK.match(s.id+" "+(s.ext||s.d), q)) && !NPK.match(a.c+" "+a.d, q)) expand[a.c] = true; }); }
+  const totalAv = avs.length; avs = avs.slice(0, 200);
+  const opt = (arr,lab) => arr.map(x=>`<option value="${x.c}">${x.c} · ${esc(lab(x))}</option>`).join("");
+  return `
+  <div class="kpis">
+    <div class="kpi"><strong>${M.familias.length}</strong>familias</div>
+    <div class="kpi"><strong>${M.avios.length}</strong>avíos base</div>
+    <div class="kpi"><strong>${M.skus.length.toLocaleString("es-PE")}</strong>SKU</div>
+    <div class="kpi"><strong>${A.tallas.length}</strong>tallas (PLAN DE VENTAS)</div>
+    <div class="kpi"><strong>${A.cargaCerrada?`<span class="badge b-gray">Cerrada</span>`:`<span class="badge b-pend">Abierta</span>`}</strong>carga inicial · se registra en Ingresos</div>
+  </div>
+  <details class="pnl"><summary>Nuevo SKU</summary>
+    <div class="fgrid">
+      <div class="fsec">1 · Avío</div>
+      <label class="c4">Avío base<input type="hidden" id="kCod"><button class="pkt empty" data-pkavio="kCod"><span class="pkl"><b>Elegir avío base…</b><small>Busca por código, descripción o familia</small></span><i>⌕</i></button><span class="note" id="kCodInfo"></span></label>
+      <label class="c1">Tipo<select class="inp" id="kTipo"><option>X DEMANDA</option><option>STOCK</option></select></label>
+      <label class="c1">Ubicación<input class="inp" id="kUbic" style="text-transform:uppercase" placeholder="A-1"></label>
+      <div class="fsec">2 · Atributos</div>
+      <label class="c2">Marca<select class="inp" id="kMar">${opt(M.marcas.filter(m=>m.act),m=>m.n)}</select></label>
+      <label class="c2">Talla (PLAN DE VENTAS)<select class="inp" id="kTal"><option value="T000">T000 · -</option>${A.tallas.filter(t=>t.c!=="T000").map(t=>`<option value="${t.c}">${t.c} · ${esc(t.n)}</option>`).join("")}</select></label>
+      <label class="c2">Medida<select class="inp" id="kMed">${opt(M.medidas.filter(m=>m.act),m=>m.n)}</select></label>
+      <label class="c1">Cód. color<input class="inp" id="kCol" style="text-transform:uppercase" placeholder="PKM001"></label>
+      <label class="c2">Nombre color<input class="inp" id="kColn" placeholder="ROSADO MEDIO GLADYS F-103"></label>
+      <label class="c4">Descripción add<input class="inp" id="kAdd" placeholder="Ej. MACHINE, CON PEGATINA" style="text-transform:uppercase"></label>
+      <div class="ffoot"><span class="note">Las tallas se crean solo en PLAN DE VENTAS › Talla. Avío + marca + talla + medida + color no puede repetirse.</span>
+        <button class="btn btn-teal" data-nuevosku>Crear SKU</button></div>
+    </div>
+  </details>
+  <details class="pnl"><summary>Nuevo avío base</summary>
+    <div class="fgrid">
+      <label class="c2">Familia<select class="inp" id="aFam" data-afam>${opt(M.familias.filter(f=>f.act),f=>f.n)}</select><span class="note" id="aFamInfo">Control: ${CTL[(M.familias.filter(f=>f.act)[0]||{}).ctl||"UNICO"][1]}</span></label>
+      <label class="c3">Descripción<input class="inp" id="aDesc" style="text-transform:uppercase" placeholder="Ej. CIERRE ESMALTADO 2 PULLER"></label>
+      <label class="c1">UN<select class="inp" id="aUn">${M.unidades.map(u=>`<option value="${u.c}">${u.c}</option>`).join("")}</select></label>
+      <label class="c2">Presentación<input class="inp" id="aPres" placeholder="Ej. PAQUETE X 100"></label>
+      <div class="ffoot"><span class="note"></span><button class="btn btn-teal" data-nuevoavio>Crear avío</button></div>
+    </div>
+  </details>
+  <details class="pnl"><summary>Nueva marca · nueva medida</summary>
+    <div class="fgrid">
+      <div class="fcard c6"><div class="fsec">Marca</div>
+        <label>Nombre<input class="inp" id="mNom" style="text-transform:uppercase" placeholder="Ej. BABY DUNN"></label>
+        <label>Cliente (PLAN DE VENTAS)<select class="inp" id="mCli"><option value="">—</option>${A.clientes.map(c=>`<option value="${c.c}">${c.c} · ${esc(c.n)}</option>`).join("")}</select></label>
+        <div class="ffoot"><button class="btn btn-teal btn-sm" data-nuevamarca>Crear marca</button></div></div>
+      <div class="fcard c6"><div class="fsec">Medida</div>
+        <label>Medida<input class="inp" id="eNom" style="text-transform:uppercase" placeholder="Ej. 18L-4H · 45 CM · 1.5 CM"></label>
+        <div class="ffoot"><button class="btn btn-teal btn-sm" data-nuevamedida>Crear medida</button></div></div>
+    </div>
+  </details>
+  <details class="pnl"><summary>Marcas ↔ clientes (${M.marcas.filter(m=>m.cli).length}/${M.marcas.length} vinculadas)</summary>
+    <div class="scroll" style="max-height:360px"><table><thead><tr><th>Código</th><th>Marca</th><th>Cliente PLAN DE VENTAS</th><th>Logo (link de Drive o URL)</th></tr></thead>
+    <tbody>${M.marcas.filter(m=>m.c!=="M000").map(m=>`<tr><td class="code">${m.c}</td><td><span class="plogo" style="width:28px;height:28px;display:inline-grid;vertical-align:middle;margin-right:6px">${m.logo?`<img src="${imgDe(m.logo,80)}" alt="" referrerpolicy="no-referrer">`:`<b style="font-size:10px">${esc(iniciales(m.n))}</b>`}</span>${esc(m.n)}</td>
+      <td><select class="inp sm" data-marcli="${m.c}"><option value="">—</option>${A.clientes.map(c=>`<option value="${c.c}" ${c.c===m.cli?"selected":""}>${c.c} · ${esc(c.n)}</option>`).join("")}</select></td><td><input class="inp sm" style="width:260px" data-marlogo="${m.c}" value="${esc(m.logo||"")}" placeholder="Pega el link del logo"></td></tr>`).join("")}</tbody></table></div>
+  </details>
+  <div class="panel">
+    <div class="ph"><h2>Maestro de avíos</h2><span class="note">${totalAv} avíos${totalAv>200?" (mostrando 200, filtra para ver el resto)":""} · clic para ver sus SKU</span>
+      <select class="inp" data-maef style="margin-left:auto"><option value="">Todas las familias</option>${M.familias.map(f=>`<option value="${f.c}" ${f.c===maeF?"selected":""}>${f.c} · ${esc(f.n)}</option>`).join("")}</select>
+      <input class="inp" data-maeq placeholder="Código, descripción, familia o SKU" value="${esc(maeQ)}" style="width:260px">
+      <button class="btn btn-sm" data-refstock>Actualizar stock</button></div>
+    <div class="scroll"><table>
+      <thead><tr><th>Código</th><th>Descripción</th><th>Familia</th><th>UN</th><th>Control</th><th class="num">SKU</th><th class="num">Ingreso</th><th class="num">Salida</th><th class="num">Stock actual</th><th class="num">Stock reserva</th><th class="num">Disponible</th></tr></thead>
+      <tbody>${avs.map(a=>{ const sk = (IX.skusDe[a.c]||[]), g = sum(sk), f = IX.fam[a.fam]||{n:a.fam};
+        return `<tr class="mrow" data-exp="${a.c}" style="${a.act?"":"opacity:.55"}">
+          <td class="code">${expand[a.c]?"▾":"▸"} ${NPK.hl(a.c, maeQ)}</td><td>${NPK.hl(a.d, maeQ)}</td><td class="nw">${esc(f.n)}${f.merma?`<span class="tag">${Math.round(f.merma*100)}%</span>`:""}</td><td>${a.un}</td>
+          <td><span class="badge ${CTL[a.ctl||"UNICO"][2]}" title="Definido en la familia ${a.fam}">${CTL[a.ctl||"UNICO"][1]}</span></td>
+          <td class="num">${sk.length}</td><td class="num">${fq(g.ing,a.un)}</td><td class="num">${fq(g.sal,a.un)}</td><td class="num"><strong>${fq(g.act,a.un)}</strong></td><td class="num">${fq(g.res,a.un)}</td>
+          <td class="num ${g.disp<0?"buy":""}">${fq(g.disp,a.un)}</td></tr>
+          ${expand[a.c]?(sk.length?sk.map(s=>{ const x = S[s.id]||{};
+            return `<tr class="vrow" style="${s.act?"":"opacity:.55"}"><td style="padding-left:24px" class="nw">${NPK.hl(s.id, maeQ)}${s.tipo==="STOCK"?`<span class="tag">STOCK</span>`:""}</td>
+            <td>${NPK.hl(s.ext || s.d, maeQ)}<input class="inp sm" style="display:block;margin-top:4px;width:100%;max-width:320px;text-transform:uppercase" data-skuadd="${s.id}" value="${esc(s.add)}" placeholder="Descripción add"></td>
+            <td><input class="inp sm" style="width:70px" data-ubic="${s.id}" value="${esc(s.ubic)}" placeholder="Ubic."></td>
+            <td><label class="note" style="display:inline-flex;gap:4px;align-items:center"><input type="checkbox" class="chk" data-skuact="${s.id}" ${s.act?"checked":""}>activo</label></td>
+            <td></td><td class="num">${x.ini?`<span class="tag" title="Carga inicial">CI ${fq(x.ini,s.un)}</span>`:""}</td>
+            <td class="num">${fq(x.ing||0,s.un)}</td><td class="num">${fq(x.sal||0,s.un)}</td><td class="num"><strong>${fq(x.act||0,s.un)}</strong></td><td class="num">${fq(x.res||0,s.un)}</td><td class="num">${fq(x.disp||0,s.un)}</td></tr>`; }).join("")
+            :`<tr class="vrow"><td colspan="11" class="note" style="padding-left:24px">Sin SKU.</td></tr>`):""}`; }).join("")}</tbody>
+    </table></div>
+    <p class="note" style="padding:0 16px 12px">Stock actual = carga inicial + ingresos − salidas. Stock reserva = reservado para pedidos aún no despachado. Disponible = actual − reserva.</p>
+  </div>`;
+}
+
+/* ================= Movimientos ================= */
+/* Kardex: tipos = los que se muestran en esta vista (el selector permite elegir uno o ver todos los de la vista). */
+function renderMov(tipos, titulo){
+  if(!MOVS) return `<div class="panel"><div class="empty">Cargando movimientos…</div></div>`;
+  const okT = movT && tipos.includes(movT) ? movT : "";
+  const hay = m => [m.item, skuLabel(m.item), m.doc, m.pe, m.dest, m.obs, m.usr].join(" ");
+  const list = MOVS.filter(m=>(okT ? m.tipo===okT : tipos.includes(m.tipo)) && NPK.match(hay(m), movQ)).slice(0, 400);
+  const cls = {INGRESO:"b-ok",SALIDA:"b-navy",RESERVA:"b-pend",LIBERA:"b-gray","CARGA INICIAL":"b-gray"};
+  return `<div class="panel" style="margin-top:18px"><div class="ph"><h2>${titulo}</h2><span class="note">${list.length} de los últimos ${MOVS.length} movimientos</span>
+    ${tipos.length>1?`<select class="inp" data-movt style="margin-left:auto"><option value="">Todos: ${tipos.join(", ").toLowerCase()}</option>${tipos.map(t=>`<option value="${t}" ${t===okT?"selected":""}>${t}</option>`).join("")}</select>`:`<span style="margin-left:auto"></span>`}
+    <input class="inp" data-movq placeholder="SKU, descripción, documento, PE o destino" value="${esc(movQ)}" style="width:280px"></div>
+    <div class="scroll"><table><thead><tr><th>Fecha</th><th>Tipo</th><th>Documento</th><th>SKU</th><th class="num">Cantidad</th><th>PE</th><th>Destino / obs.</th><th>Usuario</th></tr></thead>
+    <tbody>${list.length?list.map(m=>`<tr><td class="nw">${m.fecha}</td><td><span class="badge ${cls[m.tipo]||"b-gray"}">${m.tipo}</span></td><td class="code">${NPK.hl(m.doc, movQ)}</td>
+      <td>${NPK.hl(m.item, movQ)}<span class="est">${NPK.hl(skuLabel(m.item), movQ)}</span></td><td class="num">${fq(m.cant,m.und)} ${m.und}</td><td class="nw">${NPK.hl(m.pe, movQ)}</td><td>${NPK.hl(m.dest, movQ)}<span class="est">${NPK.hl(m.obs, movQ)}</span></td><td class="note">${esc(m.usr)}</td></tr>`).join("")
+      :`<tr><td colspan="8" class="empty">Sin movimientos.</td></tr>`}</tbody></table></div></div>`;
+}
+/* ================= Ingresos ================= */
+function renderIng(){
+  return `<div class="phead"><div><h2 style="margin:0;font-size:20px">Ingresos</h2><span class="note">Ingreso con documento (guía / OC) o carga inicial sin sustento · el stock se ve en Maestros › Avíos</span></div>
+    <div class="kpi" style="margin-left:auto"><strong>${A.cargaCerrada?`<span class="badge b-gray">Cerrada</span>`:`<span class="badge b-pend">Abierta</span>`}</strong>carga inicial</div>
+    ${A.cargaCerrada?"":`<button class="btn btn-sm" data-cerrarci>Cerrar carga inicial</button>`}</div>
+  <div class="panel"><div class="ph"><h2>Registrar movimiento de stock</h2></div>
+    <div class="form">
+      <label>Tipo<select class="inp" id="iTipo"><option value="ING">Ingreso (con documento)</option>${A.cargaCerrada?"":`<option value="CI">Carga inicial (sin sustento)</option>`}</select></label>
+      <label style="flex:1;min-width:300px">SKU<input type="hidden" id="iItem"><button class="pkt empty" data-pkskuall="iItem"><span class="pkl"><b>Elegir SKU…</b><small>Busca por SKU, descripción, color, medida o marca</small></span><i>⌕</i></button></label>
+      <label>Cantidad<input class="inp n" id="iCant" type="number" min="0" step="any"></label>
+      <label>Documento (guía / OC)<input class="inp" id="iDoc" placeholder="Auto ING-…" style="width:150px"></label>
+      <label style="flex:1;min-width:180px">Observación<input class="inp" id="iObs"></label>
+      <button class="btn btn-teal btn-sm" data-ingreso>Registrar</button>
+    </div>
+    <p class="note" style="padding:0 16px 12px">Carga inicial: una sola vez por SKU, sin documento, no aparece como ingreso. Se bloquea al cerrar la carga inicial.</p>
+  </div>
+  ${renderMov(["INGRESO","CARGA INICIAL"], "Ingresos registrados")}`;
+}
+
+/* ================= Plantillas ================= */
+let plaQ = "";
+function renderPla(){
+  const list = A.plantillas.filter(p=>(!plaCli || p.cli===plaCli) && NPK.match([p.code, p.desc, p.molde, cliName(p.cli), ...p.rows.map(r=>r.cod+" "+((IX.av[r.cod]||{}).d||""))].join(" "), plaQ));
+  const usados = [...new Set(A.plantillas.map(p=>p.cli))];
+  return `<div class="panel"><div class="ph"><h2>Plantillas de avíos por estilo</h2><span class="note">${A.plantillas.length} plantillas · se crean desde Consumo de avíos</span>
+    <input class="inp" data-plaq placeholder="Código, descripción, molde o avío" value="${esc(plaQ)}" style="width:260px;margin-left:auto">
+    <select class="inp" data-pcli><option value="">Todos los clientes</option>${usados.map(c=>`<option value="${c}" ${c===plaCli?"selected":""}>${c} · ${esc(cliName(c))}</option>`).join("")}</select></div>
+    <div class="scroll"><table><thead><tr><th>Código</th><th>Cliente</th><th>Descripción</th><th>Molde ref.</th><th>Avíos</th><th>Creada</th><th></th></tr></thead>
+    <tbody>${list.length?list.map(p=>`<tr><td class="code">${NPK.hl(p.code, plaQ)}</td><td class="nw">${esc(p.cli)} · ${NPK.hl(cliName(p.cli), plaQ)}</td><td>${NPK.hl(p.desc, plaQ)}</td><td class="nw">${NPK.hl(p.molde, plaQ)}</td>
+      <td><div style="display:flex;flex-wrap:wrap;gap:4px;max-width:420px">${p.rows.map(r=>`<span class="badge b-gray">${esc(r.cod)} · ${esc(CTL[ctlDe(r.cod)][1])}</span>`).join("")}</div></td>
+      <td class="nw note">${esc(p.fecha)}<span class="est">${esc(p.usr)}</span></td><td><button class="del" data-tdel="${p.code}">×</button></td></tr>`).join("")
+      :`<tr><td colspan="7" class="empty">Sin plantillas.</td></tr>`}</tbody></table></div></div>`;
+}
+
+/* ================= Configuración ================= */
+let cfgEdit = null;
+function tablaCfg(lista, titulo, nota){
+  const it = cfgEdit[lista], esP = lista==="PROCESO";
+  return `<div class="panel"><div class="ph"><h2>${titulo}</h2><span class="note">${nota}</span>
+    <button class="btn btn-teal btn-sm" data-cfgsave="${lista}" style="margin-left:auto">Guardar ${esP?"procesos":"lista Para"}</button></div>
+    <div class="scroll"><table><thead><tr><th class="num">Orden</th>${esP?"<th>Código</th>":""}<th>${esP?"Nombre":"Para"}</th><th>Activo</th><th></th></tr></thead>
+    <tbody>${it.map((x,i)=>`<tr style="${x.act?"":"opacity:.55"}">
+      <td class="num nw"><button class="del" data-cfgmv="${lista}|${i}|-1" ${i?"":"disabled"} title="Subir">▲</button><button class="del" data-cfgmv="${lista}|${i}|1" ${i<it.length-1?"":"disabled"} title="Bajar">▼</button> ${i+1}</td>
+      ${esP?`<td><input class="inp sm" style="width:80px;text-transform:uppercase" data-cf="${lista}|${i}|c" value="${esc(x.c)}" ${x.o?"disabled title=\"Código guardado: no se cambia\"":""}></td>`:""}
+      <td><input class="inp sm" style="width:260px;${esP?"":"text-transform:uppercase"}" data-cf="${lista}|${i}|n" value="${esc(x.n)}"></td>
+      <td><input type="checkbox" class="chk" data-cf="${lista}|${i}|act" ${x.act?"checked":""}></td>
+      <td><button class="del" data-cfgdel="${lista}|${i}" title="Eliminar">×</button></td></tr>`).join("")}</tbody></table></div>
+    <div class="foot"><button class="btn btn-sm" data-cfgadd="${lista}">Agregar ${esP?"proceso":"opción"}</button>
+      <span class="note">El orden define cómo se agrupan los avíos al imprimir. Lo que está en uso no se elimina: desactívalo.</span></div></div>`;
+}
+function renderCfg(){
+  if(!cfgEdit) cfgEdit = {PROCESO: JSON.parse(JSON.stringify(A.procesos||[])), PARA: JSON.parse(JSON.stringify(A.paras||[]))};
+  const fams = A.maestro.familias;
+  const famT = `<div class="panel"><div class="ph"><h2>Familias · control de consumo</h2><span class="note">Todos los avíos base de la familia heredan este control (también los creados en el Sheet). Se guarda al cambiarlo.</span></div>
+    <div class="scroll" style="max-height:420px"><table><thead><tr><th>Código</th><th>Familia</th><th class="num">Merma</th><th class="num">Avíos</th><th>Control de consumo</th></tr></thead>
+    <tbody>${fams.map(f=>`<tr style="${f.act?"":"opacity:.55"}"><td class="code">${f.c}</td><td>${esc(f.n)}</td><td class="num">${f.merma?Math.round(f.merma*100)+"%":"—"}</td><td class="num">${A.maestro.avios.filter(a=>a.fam===f.c).length}</td>
+      <td><select class="inp sm" data-famctl="${f.c}">${Object.keys(CTL).map(k=>`<option value="${k}" ${k===f.ctl?"selected":""}>${CTL[k][1]}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table></div></div>`;
+  return famT + tablaCfg("PROCESO","Procesos","Se asignan a cada avío del BOM") + tablaCfg("PARA","Para","Indicación de uso del avío (se imprime en rojo)");
+}
+
+/* ================= Excel ================= */
+async function exportXlsx(){
+  if(typeof ExcelJS==="undefined"){
+    try{ await new Promise((ok,ko)=>{ const sc=document.createElement("script"); sc.src="https:" + "/" + "/cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"; sc.onload=ok; sc.onerror=()=>ko(new Error("x")); document.head.appendChild(sc); setTimeout(()=>ko(new Error("t")),20000); }); }
+    catch(e){ return toast("No se pudo descargar la librería de Excel (cdnjs bloqueado o sin internet).", true); }
+  }
+  const rows = filasCompra().filter(x=>!soloComprar || x.comprar>0);
+  const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet("Rqto compra "+P.pe, {views:[{state:"frozen", ySplit:4}]});
+  ws.columns = [16,30,30,7,12,12,12,13,12,16,22,24].map(w=>({width:w}));
+  ws.mergeCells("A1:L1"); ws.getCell("A1").value = "Requerimiento de compra de avíos · " + P.pe + " · " + P.marca; ws.getCell("A1").font = {bold:true,size:14,color:{argb:"FF082D58"}};
+  ws.mergeCells("A2:L2"); ws.getCell("A2").value = "Emitido " + new Date().toLocaleString("es-PE") + " por " + A.user + " · Requerido incluye merma de familia"; ws.getCell("A2").font = {italic:true,size:10,color:{argb:"FF5B6B80"}};
+  const h = ws.getRow(4); h.values = ["SKU","Descripción extensa","Detalle","UN","Requerido","Stock actual","Stock reserva","Reservado PE","Atendido PE","Rqto. saldo a comprar","Proveedor","Estilos"];
+  h.eachCell(c=>{ c.font={bold:true,color:{argb:"FFFFFFFF"}}; c.fill={type:"pattern",pattern:"solid",fgColor:{argb:"FF082D58"}}; c.alignment={vertical:"middle",wrapText:true}; }); h.height = 30;
+  rows.forEach((x,i)=>{ const r = 5+i, row = ws.getRow(r);
+    row.values = [x.item,x.desc,x.det,x.und,x.req,x.s.act,x.s.res,x.s.resPE,x.s.salPE,{formula:"MAX(0,E"+r+"-I"+r+"-H"+r+"-MAX(0,F"+r+"-G"+r+"))", result:x.comprar},x.prov,x.est];
+    [5,6,7,8,9,10].forEach(c=>row.getCell(c).numFmt = entera(x.und)?"#,##0":"#,##0.00");
+    row.getCell(10).font = {bold:true,color:{argb:x.comprar>0?"FFB3261E":"FF1A9F7F"}}; });
+  ws.autoFilter = {from:"A4", to:"L"+(4+rows.length)};
+  const blob = new Blob([await wb.xlsx.writeBuffer()], {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "Rqto_compra_avios_" + P.pe + ".xlsx"; document.body.appendChild(a); a.click(); a.remove();
+}
+
+/* ================= Eventos ================= */
+const curSt = () => P.estilos.find(s=>s.c===selStyle);
+const findRow = id => P.bom[selStyle].find(r=>r.id==id);
+function mergePed(p){ if(!p) return; const i = A.pedidos.findIndex(x=>x.pe===p.pe); if(i>=0) A.pedidos[i] = p; else A.pedidos.unshift(p); }
+function afterAction(r, msg){ P.stock = r.stock; mergePed(r.ped); STOCK = null; MOVS = null; render(); toast(msg); }
+function setMaestro(m){ A.maestro = m; indexar(); }
+
+const inAV = el => !!(el && el.closest && el.closest("#avRoot, #avHost"));
+document.addEventListener("click", async e=>{
+  if(!inAV(e.target)) return;
+  const b = e.target.closest("button, tr.mrow, article.pcard"); if(!b) return;
+  const d = b.dataset;
+  if(b.matches("tr.mrow")){ if(e.target.closest("input,select,label")) return; expand[d.exp] = !expand[d.exp]; return render(); }
+  if(d.skupk){ const [rid, modo, i] = d.skupk.split("|"); return pkSku(rid, modo, i); }
+  if(d.pkavio) return pkAvio(d.pkavio, d.pkavio==="nCod" ? ()=>refrescarAlta() : cod=>{ const a = IX.av[cod]; $("kCodInfo").textContent = a ? "control " + CTL[a.ctl||"UNICO"][1] + " · " + (IX.skusDe[a.c]||[]).length + " SKU" : ""; });
+  if(d.pkskuall) return pkSkuAll(d.pkskuall);
+  if(d.zoom!==undefined){ e.stopPropagation(); return zoom(d.zoom); }
+  if(d.closelb!==undefined) return $("lb") && $("lb").remove();
+  if(d.vercad){ e.stopPropagation(); return verCad(d.vercad, d.pe); }
+  if(d.pedmas!==undefined){ pedMax += PED_TANDA; const g = $("pgrid"); if(g) g.innerHTML = gridPedidos(filtrarPedidos()); return; }
+  if(d.open) return abrirPedido(d.open);
+  if(d.pchip!==undefined){ pedE = d.pchip; pedMax = PED_TANDA; return render(); }
+  if(d.pschip!==undefined){ pedS = d.pschip; pedMax = PED_TANDA; return render(); }
+  if(d.cerrar!==undefined){ if(Object.keys(P.bom).some(isDirty) && !(await confirmar("Hay consumos sin guardar. ¿Salir igual?"))) return; P = null; render(); if(view==="res" || view==="sal"){ MOVS = await run("getMovimientos", ""); render(); } return; }
+  if(d.sub){ sub = d.sub; tplMode = null;
+    if(sub==="res" || sub==="sal"){ const [st, mv] = await Promise.all([run("getStock", P.pe), sub==="sal" ? run("getMovimientos", P.pe) : Promise.resolve(MOVS)]); P.stock = st; MOVS = mv; }
+    return render(); }
+  if(d.edit){ selStyle = d.edit; sub = "con"; return render(); }
+  if(d.pick){ selStyle = d.pick; tplMode = null; cerrarModal(); return render(); }
+  if(d.lista!==undefined){ listaOff = !listaOff; return render(); }
+  const st = P && curSt();
+  if(d.addsku){ const s = IX.sku[d.addsku]; P.bom[st.c].push(nuevaLinea(d.addsku, st)); recien.add(d.addsku); render();
+    return toast((s ? s.cod : d.addsku) + " agregado al BOM de " + st.c + ". Recuerda Guardar BOM."); }
+  if(d.altaavio!==undefined) return abrirAlta();
+  if(d.guardaralta!==undefined) return guardarAlta();
+  if(d.cerrarmodal!==undefined) return cerrarModal();
+  if(d.iadd){ const r = findRow(d.iadd), ctl = ctlDe(r.cod), usados = new Set(r.items.map(x=>x.sku)), lista = porMarca(skusAv(r.cod));
+    const sig = (lista.find(x=>!usados.has(x.id)) || lista[0] || {}).id || "";
+    r.items.push(ctl==="MEDIDA" ? {sku:sig, ct:{}} : {sku:sig, cons:1}); initLinea(r, st); return render(); }
+  if(d.idel){ const r = findRow(d.id); r.items.splice(+d.idel, 1); return render(); }
+  if(d.maddcol){ const r = findRow(d.maddcol), usados = new Set(r.cols), sig = coloresDe(r).map(s=>s.col||"").find(c=>!usados.has(c)); if(sig==null) return toast("No hay otro color con SKU para esta marca. Créalo con + Registrar avío nuevo.", true); r.cols.push(sig); return render(); }
+  if(d.mdel){ const r = findRow(d.id); r.cols.splice(+d.mdel, 1); return render(); }
+  if(d.del){ P.bom[st.c] = P.bom[st.c].filter(r=>r.id!=d.del); return render(); }
+  if(d.crearfalt!==undefined){
+    const f = []; const seen = new Set();
+    P.bom[st.c].forEach(r=>faltantesDe(st,r).forEach(m=>{ const k = [m.cod,m.mar,m.tal,m.med,m.col].join("|"); if(seen.has(k)) return; seen.add(k); f.push(m); }));
+    if(!f.length) return toast("Las tallas faltantes no tienen código T### en DETALLE_TALLAS.", true);
+    if(!(await confirmar("Crear " + f.length + " SKU nuevos en BD_AVIOS?\n" + f.map(x=>x.cod+" · "+x.mar+" · "+x.tal+" · "+x.med+(x.col?" · "+x.col:"")).join("\n")))) return;
+    const r = await run("crearSKUs", f); setMaestro(r.maestro); render(); return toast("SKU creados: " + r.ids.join(", "));
+  }
+  if(d.savebom!==undefined){
+    const rows = strip(P.bom[st.c]), prev = P.saved[st.c];
+    P.saved[st.c] = JSON.stringify(rows); LPC = null;
+    let r;
+    try { r = await run("guardarBOM", P.pe, st.c, st.m, rows, meta(), sendLines()); } catch(err){ P.saved[st.c] = prev; return; }
+    mergePed(r.ped); P.stock = r.stock;
+    const falt = P.bom[st.c].reduce((a,x)=>a+calc(st,x).missing.length,0);
+    render(); return toast("BOM de " + st.c + " guardado." + (falt ? " Ojo: " + falt + " tallas sin SKU." : "") + (r.liberadas ? " Se liberó reserva sobrante." : ""));
+  }
+  if(d.hist!==undefined){
+    const h = await run("bomPorMolde", st.m, st.c);
+    if(!h) return toast("No hay BOM guardado con el molde " + st.m + ".", true);
+    if(P.bom[st.c].length && !(await confirmar("Reemplazar los avíos de " + st.c + " con los de " + h.modelo + " (" + h.pe + ")?"))) return;
+    P.bom[st.c] = h.rows.filter(x=>x && x.cod).map(r=>{ r.id = ++uid; initLinea(r, st); return r; }); render(); return toast("Copiado de " + h.modelo + ". Revisa y guarda.");
+  }
+  if(d.tpl){ tplMode = d.tpl==="close" ? null : d.tpl; if(tplMode==="print"){ prnProc = null; prnSty = null; } return render(); }
+  if(d.doprint!==undefined) return imprimirConsumos();
+  if(d.tsave!==undefined){
+    const p = {code:$("tCode").value.trim().toUpperCase(), cli:$("tCli").value, desc:$("tDesc").value.trim(), molde:st.m, rows:strip(P.bom[st.c])};
+    A.plantillas = await run("guardarPlantilla", p); tplMode = null; render(); return toast("Plantilla " + p.code + " guardada.");
+  }
+  if(d.tapply){
+    const p = A.plantillas.find(x=>x.code===d.tapply);
+    if(P.bom[st.c].length && !(await confirmar(st.c + " ya tiene avíos. ¿Reemplazarlos con " + p.code + "?"))) return;
+    P.bom[st.c] = JSON.parse(JSON.stringify(p.rows)).filter(x=>x && x.cod).map(r=>{ r.id = ++uid; initLinea(r, st); return r; }); tplMode = null; render(); return toast("Plantilla " + p.code + " aplicada. Revisa y guarda.");
+  }
+  if(d.tdel){ if(!(await confirmar("¿Eliminar la plantilla " + d.tdel + "?"))) return; A.plantillas = await run("eliminarPlantilla", d.tdel); return render(); }
+  if(d.reservar!==undefined){ const r = await run("reservar", P.pe, meta(), sendLines()); return afterAction(r, r.n ? "Reserva " + r.doc + ": " + r.n + " SKU. Estado: " + r.estado + "." : "No hay disponible para reservar. Revisa el saldo a comprar."); }
+  if(d.liberar!==undefined){ if(!(await confirmar("¿Liberar toda la reserva pendiente de " + P.pe + "?"))) return; const r = await run("liberar", P.pe, meta(), sendLines()); return afterAction(r, "Reserva liberada (" + r.doc + ")."); }
+  if(d.xls!==undefined) return exportXlsx();
+  if(d.fill){ document.querySelectorAll("[data-sal]").forEach(i=>i.value = d.fill==="res" ? i.dataset.res : d.fill==="max" ? i.dataset.max : 0); return; }
+  if(d.salida!==undefined){
+    const ls = lineasPE(), out = [];
+    for(const i of document.querySelectorAll("[data-sal]")){ const q = Number(i.value)||0; if(q<=0) continue; if(q > Number(i.dataset.max)+1e-9) return toast(i.dataset.sal + ": máximo " + i.dataset.max + ".", true); const l = ls.find(x=>x.item===i.dataset.sal); out.push({item:l.item, base:l.base, und:l.und, cant:q}); }
+    if(!out.length) return toast("Ingresa al menos una cantidad a despachar.", true);
+    if(!(await confirmar("Generar salida de " + out.length + " SKU para " + $("sDest").value + "?"))) return;
+    const r = await run("generarSalida", P.pe, meta(), sendLines(), out, $("sDest").value, $("sObs").value);
+    salObs = ""; P.stock = r.stock; mergePed(r.ped); STOCK = null; MOVS = await run("getMovimientos", P.pe); render(); return toast("Salida " + r.doc + " generada. Estado: " + r.estado + ".");
+  }
+  if(d.ingreso!==undefined){
+    const tipo = $("iTipo").value, item = $("iItem").value.trim().toUpperCase();
+    if(!item) return toast("Elige el SKU con el buscador antes de registrar.", true);
+    if(!IX.sku[item]) return toast("SKU no encontrado: " + item, true);
+    const r = tipo==="CI" ? await run("cargaInicial", {item, cant:$("iCant").value, obs:$("iObs").value}, P ? P.pe : "")
+                          : await run("registrarIngreso", {item, cant:$("iCant").value, doc:$("iDoc").value, obs:$("iObs").value}, P ? P.pe : "");
+    if(P) P.stock = r.stock;
+    STOCK = r.stock; MOVS = await run("getMovimientos", ""); render(); return toast((tipo==="CI"?"Carga inicial":"Ingreso " + r.doc) + ": " + item + ".");
+  }
+  if(d.cerrarci!==undefined){ if(!(await confirmar("Cerrar la carga inicial? Después solo se podrá registrar ingresos con documento. No se puede deshacer desde la app."))) return; await run("cerrarCargaInicial"); A.cargaCerrada = true; render(); return toast("Carga inicial cerrada."); }
+  if(d.nuevosku!==undefined){
+    const r = await run("crearSKU", {cod:$("kCod").value, mar:$("kMar").value, tal:$("kTal").value, med:$("kMed").value, col:$("kCol").value, coln:$("kColn").value, ubic:$("kUbic").value, tipo:$("kTipo").value, add:$("kAdd").value});
+    setMaestro(r.maestro); expand[IX.sku[r.id].cod] = true; maeQ = ""; render(); return toast("SKU " + r.id + " creado.");
+  }
+  if(d.nuevoavio!==undefined){ const r = await run("crearAvio", {fam:$("aFam").value, d:$("aDesc").value, un:$("aUn").value, pres:$("aPres").value}); setMaestro(r.maestro); render(); return toast("Avío " + r.cod + " creado."); }
+  if(d.nuevamarca!==undefined){ const r = await run("crearMarca", {n:$("mNom").value, cli:$("mCli").value}); setMaestro(r.maestro); render(); return toast("Marca " + r.cod + " creada."); }
+  if(d.nuevamedida!==undefined){ const r = await run("crearMedida", {n:$("eNom").value}); setMaestro(r.maestro); render(); return toast("Medida " + r.cod + " creada."); }
+  if(d.refped!==undefined){ A.pedidos = await run("getPedidos", true); render(); return toast("Pedidos actualizados desde PLAN DE VENTAS."); }
+  if(d.cfgadd){ cfgEdit[d.cfgadd].push({c:"", n:"", o:0, act:true}); return render(); }
+  if(d.cfgdel){ const [l,i] = d.cfgdel.split("|"); cfgEdit[l].splice(+i,1); return render(); }
+  if(d.cfgmv){ const [l,i,dir] = d.cfgmv.split("|"), a = cfgEdit[l], j = +i + +dir; [a[+i], a[j]] = [a[j], a[+i]]; return render(); }
+  if(d.cfgsave){
+    const l = d.cfgsave, items = cfgEdit[l].map(x=>({c: l==="PARA" ? x.n : x.c, n:x.n, act:x.act}));
+    const r = await run("guardarConfig", l, items);
+    A.procesos = r.procesos; A.paras = r.paras; cfgEdit = {PROCESO: JSON.parse(JSON.stringify(r.procesos)), PARA: JSON.parse(JSON.stringify(r.paras))};
+    render(); return toast((l==="PROCESO"?"Procesos":"Lista Para") + " guardada.");
+  }
+  if(d.ingrap){
+    const v = await dialogoIngreso(d.ingrap, d.sug); if(!v) return;
+    const r = v.tipo==="CI" ? await run("cargaInicial", {item:d.ingrap, cant:v.cant, obs:v.obs}, P.pe)
+                            : await run("registrarIngreso", {item:d.ingrap, cant:v.cant, doc:v.doc, obs:v.obs}, P.pe);
+    P.stock = r.stock; STOCK = null;
+    if(v.reservar){ const rr = await run("reservar", P.pe, meta(), sendLines()); return afterAction(rr, (v.tipo==="CI"?"Carga inicial":"Ingreso " + r.doc) + " registrado y reservado (" + (rr.doc||"sin cambios") + "). Estado: " + rr.estado + "."); }
+    render(); return toast((v.tipo==="CI"?"Carga inicial":"Ingreso " + r.doc) + " registrado. Stock actualizado: ya puedes reservar."); }
+  if(d.refstock!==undefined){ STOCK = await run("getStock"); return render(); }
+});
+
+function toggleSave(){ const st = curSt(), sb = document.querySelector("[data-savebom]"); if(st && sb) sb.disabled = !isDirty(st.c); }
+document.addEventListener("change", async e=>{
+  if(!inAV(e.target)) return;
+  const t = e.target, d = t.dataset;
+  if(d.lf){
+    const st = curSt(), r = findRow(d.id); if(!r) return;
+    if(d.lf==="proc"){ r.proc = t.value; return toggleSave(); }
+    if(d.lf==="para"){ r.para = t.value; return toggleSave(); }
+    if(d.lf==="ref"){ const v = t.value.trim().toUpperCase(), s = IX.sku[v];
+      if(!s || s.cod!==r.cod || !s.act){ toast(v ? v + " no es un SKU activo de " + r.cod + ". Elige uno de la lista." : "Elige un SKU de la lista.", true); return render(); }
+      r.ref = v; if(ctlDe(r.cod)==="MEDIDA"){ r.cols = r.cols && r.cols.length ? r.cols : [""]; r.cols[0] = s.col||""; } return render(); }
+    if(d.lf==="cons") return render();
+    return;
+  }
+  if(d.li==="cons" || d.li==="ct") return render();
+  if(d.modo!==undefined){ const st = curSt(), r = findRow(d.id); if(!r) return; const o = d.modo==="L" ? r : r.items[+d.modo];
+    o.modo = t.value; if(o.modo==="T") llenarCt(o, st); else if(o.cons==null){ const v = Object.values(o.ct||{}).find(x=>Number(x)>0); o.cons = v!=null ? Number(v) : 1; } return render(); }
+  if(d.mt!==undefined){ const r = findRow(d.id); if(!r) return; r.med[d.mt] = t.value; return render(); }
+  if(d.mc!==undefined){ const r = findRow(d.id); if(!r) return; r.ct[d.mc] = +t.value||0; return render(); }
+  if(d.mcol!==undefined){ const r = findRow(d.id); if(!r) return; r.cols[+d.mcol] = t.value; return render(); }
+  if(d.li==="sku"){ const r = findRow(d.id); if(!r) return; const v = t.value.trim().toUpperCase(), s = IX.sku[v];
+    if(!s || s.cod!==r.cod || !s.act){ toast(v ? v + " no es un SKU activo de " + r.cod + ". Elige uno de la lista." : "Elige un SKU de la lista.", true); return render(); }
+    r.items[+d.i].sku = v; return render(); }
+  if(d.cf && t.type==="checkbox"){ const [l,i] = d.cf.split("|"); cfgEdit[l][+i].act = t.checked; return render(); }
+  if(d.nmodo!==undefined || d.nctl!==undefined || d.ncod!==undefined){ refrescarAlta(); return; }
+  if(d.kcod!==undefined){ const a = IX.av[t.value.trim().toUpperCase()]; $("kCodInfo").textContent = a ? a.d + " · " + a.un + " · control " + CTL[a.ctl||"UNICO"][1] + " · " + (IX.skusDe[a.c]||[]).length + " SKU" : (t.value ? "No existe ese avío base" : ""); return; }
+  if(d.afam!==undefined){ $("aFamInfo").textContent = "Control: " + CTL[(IX.fam[t.value]||{}).ctl||"UNICO"][1]; return; }
+  if(d.addsolo!==undefined){ addSolo = t.checked; const box = $("addRes"); if(box) box.innerHTML = resultadosAdd(); return; }
+  if(d.tcli!==undefined){ $("tCode").value = nextTpl(t.value); return; }
+  if(d.tall!==undefined){ tplAll = t.checked; return render(); }
+  if(d.pproc!==undefined){ t.checked ? prnProc.add(d.pproc) : prnProc.delete(d.pproc); return render(); }
+  if(d.psty!==undefined){ t.checked ? prnSty.add(d.psty) : prnSty.delete(d.psty); return render(); }
+  if(d.pcli!==undefined){ plaCli = t.value; return render(); }
+  if(d.solo!==undefined){ soloComprar = t.checked; return render(); }
+  if(d.pede!==undefined){ pedE = t.value; return render(); }
+  if(d.peds!==undefined){ pedS = t.value; return render(); }
+  if(d.pord!==undefined){ pedOrden = t.value; return render(); }
+  if(d.movt!==undefined){ movT = t.value; return render(); }
+  if(d.maef!==undefined){ maeF = t.value; return render(); }
+  if(d.sdest!==undefined){ salDest = t.value; return; }
+  if(d.famctl){ setMaestro(await run("actualizarFamilia", d.famctl, {ctl:t.value})); render(); return toast("Familia " + d.famctl + ": control " + CTL[t.value][1] + ". Lo heredan todos sus avíos."); }
+  if(d.ubic){ setMaestro(await run("actualizarSKU", d.ubic, {ubic:t.value})); return toast("Ubicación de " + d.ubic + " guardada."); }
+  if(d.skuadd){ setMaestro(await run("actualizarSKU", d.skuadd, {add:t.value})); render(); return toast("Descripción de " + d.skuadd + " actualizada."); }
+  if(d.skuact){ setMaestro(await run("actualizarSKU", d.skuact, {act:t.checked})); return render(); }
+  if(d.marlogo){ setMaestro(await run("actualizarMarcaLogo", d.marlogo, t.value)); render(); return toast("Logo de " + d.marlogo + " guardado."); }
+  if(d.marcli){ setMaestro(await run("actualizarMarcaCliente", d.marcli, t.value)); return toast("Marca " + d.marcli + " vinculada."); }
+});
+document.addEventListener("input", e=>{
+  if(!inAV(e.target)) return;
+  const t = e.target, d = t.dataset;
+  if(d.cf && t.type!=="checkbox"){ const [l,i,k] = d.cf.split("|"); cfgEdit[l][+i][k] = k==="c" ? t.value.trim().toUpperCase() : t.value; return; }
+  const keep = (sel, v) => { const p = t.selectionStart; render(); const n = document.querySelector(sel); if(n){ n.focus(); n.setSelectionRange(p,p); } };
+  if(d.pedq!==undefined){ pedQ = t.value; pedMax = PED_TANDA; const g = $("pgrid"); if(g){ g.innerHTML = gridPedidos(filtrarPedidos()); return; } return keep("[data-pedq]"); }
+  if(d.movq!==undefined){ movQ = t.value; return keep("[data-movq]"); }
+  if(d.plaq!==undefined){ plaQ = t.value; return keep("[data-plaq]"); }
+  if(d.maeq!==undefined){ maeQ = t.value; return keep("[data-maeq]"); }
+  if(d.sobs!==undefined){ salObs = t.value; return; }
+  if(d.addq!==undefined){ addQ = t.value; const box = $("addRes"); if(box) box.innerHTML = resultadosAdd(); return; }
+  if(d.lf==="cons" || d.li==="cons" || d.li==="ct"){
+    const st = curSt(), r = findRow(d.id); if(!r) return;
+    if(d.lf==="cons") r.cons = +t.value||0;
+    if(d.li==="cons") r.items[+d.i].cons = +t.value||0;
+    if(d.li==="ct"){ const o = d.i==="L" ? r : r.items[+d.i]; o.ct = o.ct || {}; o.ct[d.t] = +t.value||0; }
+    refrescarLinea(r);
+  }
+});
+document.addEventListener("keydown", e=>{
+  if(NPK.abierto || !inAV(e.target) && !(e.key==="Escape" && ($("lb") || enModal))) return;
+  if(e.key==="Enter" && e.target && e.target.classList && e.target.classList.contains("pcard")){ abrirPedido(e.target.dataset.open); return; }
+  if(e.key==="Escape"){ if(enModal) return cerrarModal(); if($("lb")) $("lb").remove(); }
+});
+
+/* ================= Inicio ================= */
+function fatal(msg){
+  window.__boot.ok = true; $("app").setAttribute("data-fatal","1"); $("avRoot").hidden = false; $("ctRoot").hidden = true;
+  $("app").innerHTML = `<div class="panel" style="padding:20px"><h2 style="margin:0 0 8px;font-size:16px;color:var(--danger)">No se pudo cargar la app</h2>
+    <p style="margin:0 0 12px">${esc(msg)}</p>
+    <div class="note">Revisa: 1) que ejecutaste <b>setup()</b> en el editor; 2) que autorizaste la app; 3) que tu cuenta tiene acceso de lectura a PLAN DE VENTAS 2026;
+    4) si tienes varias cuentas Google abiertas, abre la app en incógnito con una sola cuenta.</div></div>`;
+}
+let ready = false;
+window.addEventListener("error", e => ready ? toast("Error: " + e.message, true) : fatal("Error en la página: " + e.message + (e.lineno ? " · línea " + e.lineno + ":" + (e.colno||0) : "") + " · archivos cargados: JsComun " + (typeof NPK!=="undefined" ? "✓" : "✗") + " · JsAvios ✓"));
+window.imgFalla = imgFalla;
+const initTimer = setTimeout(()=>fatal("El servidor no respondió en 40 segundos."), 40000);
+google.script.run
+  .withSuccessHandler(raw=>{
+    clearTimeout(initTimer);
+    try{
+      const r = typeof raw==="string" ? JSON.parse(raw) : raw;
+      if(!r) throw new Error("El servidor devolvió una respuesta vacía.");
+      A = r; if(!A.maestro) A.maestro = {familias:[],unidades:[],avios:[],marcas:[],medidas:[],skus:[]};
+      indexar(); $("user").textContent = r.user; if(r.version) $("ver").textContent = r.version; ready = true; window.__boot.ok = true;
+      if(!$("app").getAttribute("data-fatal")) Shell.go(Shell.last()); /* si hubo error de carga, se deja visible */
+      if(r.errores && r.errores.length) toast("Avisos al cargar: " + r.errores.join(" | "), true);
+    }catch(e){ fatal(e.message); }
+  })
+  .withFailureHandler(e=>{ clearTimeout(initTimer); fatal(e && e.message ? e.message : String(e)); })
+  .getInit();
+</script>

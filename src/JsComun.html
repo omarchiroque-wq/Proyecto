@@ -1,0 +1,177 @@
+<script>
+/* ================= Arranque: si el servidor no responde, muestra el motivo ================= */
+window.__boot = {ok:false, errs:[]};
+window.addEventListener("error", function(e){ window.__boot.errs.push((e.message||"error") + (e.lineno ? " (línea " + e.lineno + ")" : "")); });
+setTimeout(function(){
+  if(window.__boot.ok) return;
+  var app = document.getElementById("app");
+  if(!app || app.getAttribute("data-fatal")) return;
+  document.getElementById("avRoot").hidden = false;
+  app.innerHTML = '<div class="panel" style="padding:20px"><h2 style="margin:0 0 8px;font-size:16px;color:#B3261E">La app no terminó de cargar</h2>'
+    + (window.__boot.errs.length ? '<p><b>Error del navegador:</b> ' + window.__boot.errs.join(" | ").replace(/</g,"&lt;") + '</p>' : '<p>El servidor no respondió.</p>')
+    + '<p class="note">Versión esperada: ' + document.getElementById("ver").textContent + '. Si ves otra, crea una Nueva versión de la implementación o usa la URL /dev. Abre en incógnito con una sola cuenta. En el editor ejecuta diagnostico().</p></div>';
+}, 20000);
+
+/* ================= Selector con búsqueda (compartido por Combos y Avíos) =================
+   Búsqueda por palabras en cualquier orden, sin tildes, con resaltado; filtros rápidos (chips) con conteo;
+   primero lo que empieza con lo escrito y lo más usado; teclado: ↑↓←→, Enter, Esc.
+   NPK.open({title, sub, ph, cur, f, back, src:()=>({items:[{id,lbl,sub,hay,img,sw,tag,est,use,note,warn}], chips:[[k,texto,filtro]], none}),
+             scopes:[[valor,texto]], extra:'html', onPick(item, scope), onClick(boton)}) */
+const NPK = (function(){
+  let PK = null;
+  const EST = {'Aprobado':'ok','En aprobación cliente':'ap','En desarrollo':'dv'};
+  const e = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const norm = t => String(t ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const toks = q => norm(q).split(/\s+/).filter(Boolean);
+  const match = (hay, q) => { const n = norm(hay); return toks(q).every(t => n.includes(t)); };
+  function hl(t, q){
+    t = String(t ?? ''); const tk = toks(q); if(!tk.length) return e(t);
+    const n = norm(t), mk = new Array(t.length).fill(false);
+    tk.forEach(k => { let i = n.indexOf(k); while(i >= 0){ for(let j=i;j<i+k.length;j++) mk[j] = true; i = n.indexOf(k, i + k.length); } });
+    let o = '', on = false;
+    [...t].forEach((ch,i) => { if(mk[i] && !on){ o += '<mark>'; on = true; } if(!mk[i] && on){ o += '</mark>'; on = false; } o += e(ch); });
+    return o + (on ? '</mark>' : '');
+  }
+  /** Ordena: primero lo que empieza con la primera palabra, luego lo más usado, luego alfabético natural. */
+  function rank(L, q, lbl){
+    const q0 = toks(q)[0] || '';
+    return L.sort((a,b) => (norm(lbl(b)).startsWith(q0) - norm(lbl(a)).startsWith(q0)) || ((b.use||0) - (a.use||0)) || String(lbl(a)).localeCompare(String(lbl(b)), 'es', {numeric:true}));
+  }
+  function items(){
+    const src = PK.src(), chips = src.chips || [];
+    const fl = (chips.find(c => c[0]===PK.f) || [0,0,()=>1])[2];
+    const tk = toks(PK.q);
+    let L = rank(src.items.filter(fl).filter(i => { const n = norm(i.hay ?? i.lbl); return tk.every(t => n.includes(t)); }), PK.q, i => i.lbl);
+    if(src.none && (!tk.length || norm(src.none.lbl + ' -').includes(norm(PK.q)))) L.unshift({...src.none, none:true});
+    const tot = L.length; if(L.length > 150) L = L.slice(0, 150);
+    return {L, tot, chips: chips.map(([k,t,f]) => [k, t, src.items.filter(f).length])};
+  }
+  const host = () => document.getElementById('pkHost') || document.body;
+  function open(cfg){
+    PK = {q:'', hi:0, ...cfg};
+    const src = cfg.src();
+    /* filtro inicial: el primero que tenga resultados (antes podía abrir vacío, p. ej. "Aprobados" sin artes aprobados) */
+    if(!PK.f){ const ch = src.chips || []; PK.f = (ch.find(([k,t,f]) => src.items.some(f)) || ch[0] || ['all'])[0]; }
+    let el = document.getElementById('pk');
+    if(!el){ el = document.createElement('div'); el.id = 'pk'; el.className = 'pkbg'; host().appendChild(el); }
+    el.innerHTML = `<div class="pkm" role="dialog" aria-modal="true" aria-label="${e(cfg.title)}">
+      <div class="pkh"><div><b>${e(cfg.title)}</b><span>${e(cfg.sub||'')}</span></div><button class="x" data-pkx aria-label="Cerrar">×</button></div>
+      <div class="pks"><input class="fi" id="pk-q" placeholder="${e(cfg.ph||'Buscar…')}" autocomplete="off"><div class="pkf" id="pk-f"></div></div>
+      <div class="pkg" id="pk-g" role="listbox"></div>
+      ${cfg.extra || ''}
+      <div class="pkb">${cfg.scopes ? `<span class="pkap">Aplicar a:</span>${cfg.scopes.map(([v,l],i)=>`<label><input type="radio" name="pksc" value="${e(v)}"${i?'':' checked'}> ${e(l)}</label>`).join('')}` : ''}<span class="pkcnt" id="pk-n"></span><small>↑↓←→ navegar · Enter elegir · Esc cerrar</small></div></div>`;
+    el.classList.add('on'); list(); setTimeout(() => { const q = document.getElementById('pk-q'); if(q) q.focus(); });
+  }
+  function list(){
+    const {L, tot, chips} = items(); PK.L = L;
+    if(PK.hi >= L.length) PK.hi = Math.max(0, L.length - 1);
+    document.getElementById('pk-f').innerHTML = chips.map(([k,t,n]) => `<button class="pkc ${PK.f===k?'on':''}" data-pkf="${k}">${e(t)} <small>${n}</small></button>`).join('');
+    document.getElementById('pk-n').textContent = tot > L.length ? `Mostrando ${L.length} de ${tot}: escribe más para acotar` : '';
+    const g = document.getElementById('pk-g');
+    g.innerHTML = L.length ? L.map((i,ix) => `<button class="pki ${ix===PK.hi?'hi':''} ${String(i.id)===String(PK.cur)?'cur':''}" role="option" aria-selected="${ix===PK.hi}" data-pki="${ix}">
+       ${i.img!==undefined || i.sw || i.none ? `<span class="pkim">${i.none?'<em>-</em>':i.img?`<img src="${e(i.img)}" alt="" referrerpolicy="no-referrer">`:i.sw?`<span class="pksw" style="background:${e(i.sw)}"></span>`:'<em>-</em>'}</span>` : ''}
+       <span class="pktx"><b>${hl(i.lbl, PK.q)}${i.tag?` <span class="ctlb ${e(i.tag)}">${e(i.tagTxt||i.tag)}</span>`:''}</b><small>${hl(i.sub||'', PK.q)}</small>${i.est?`<span class="pkst ${EST[i.est]||'so'}">${e(i.est)}</span>`:''}${i.use?`<span class="pku">usado ${i.use}×</span>`:''}${i.note?`<span class="pku">${e(i.note)}</span>`:''}${i.warn?`<span class="pku no">${e(i.warn)}</span>`:''}</span></button>`).join('')
+      : `<div class="pkn">Sin resultados${PK.f!=='all' && (PK.src().chips||[]).some(c=>c[0]==='all') ? ` en este filtro. <button class="link" data-pkf="all">Buscar en todos</button>` : '.'}</div>`;
+    const h = g.querySelector('.hi'); if(h) h.scrollIntoView({block:'nearest'});
+  }
+  function pickItem(i){
+    if(!i || !PK) return;
+    const sc = (document.querySelector('[name=pksc]:checked') || {}).value || 'cell', cb = PK.onPick, back = PK.back;
+    close(true); cb(i, sc);
+    const k = back && document.querySelector(back); if(k) k.focus();
+  }
+  function close(silent){
+    const el = document.getElementById('pk'); if(el){ el.classList.remove('on'); el.innerHTML = ''; }
+    const back = PK && PK.back; PK = null;
+    if(!silent && back){ const k = document.querySelector(back); if(k) k.focus(); }
+  }
+  document.addEventListener('input', ev => { if(PK && ev.target.id==='pk-q'){ PK.q = ev.target.value; PK.hi = 0; list(); } });
+  document.addEventListener('keydown', ev => {
+    if(!PK) return; const g = document.getElementById('pk-g');
+    if(ev.key==='Escape'){ ev.preventDefault(); ev.stopPropagation(); close(); return; }
+    const cards = g ? [...g.querySelectorAll('.pki')] : []; if(!cards.length) return;
+    const cols = Math.max(1, Math.round(g.clientWidth / (cards[0].offsetWidth + 8)));
+    const mv = {ArrowDown:cols, ArrowUp:-cols, ArrowRight:1, ArrowLeft:-1}[ev.key];
+    if(mv!==undefined && (ev.target.id!=='pk-q' || ev.key==='ArrowDown' || ev.key==='ArrowUp')){ ev.preventDefault(); PK.hi = Math.min(cards.length-1, Math.max(0, PK.hi+mv)); list(); return; }
+    if(ev.key==='Enter'){ ev.preventDefault(); ev.stopPropagation(); pickItem(PK.L[PK.hi]); }
+  }, true);
+  document.addEventListener('click', ev => {
+    if(!PK) return;
+    if(ev.target.id==='pk'){ close(); return; }
+    const b = ev.target.closest('button'); if(!b || !b.closest('#pk')) return;
+    ev.stopPropagation();
+    if(b.dataset.pkx!==undefined){ close(); return; }
+    if(b.dataset.pkf){ PK.f = b.dataset.pkf; PK.hi = 0; list(); document.getElementById('pk-q').focus(); return; }
+    if(b.dataset.pki!==undefined){ pickItem(PK.L[+b.dataset.pki]); return; }
+    if(PK.onClick) PK.onClick(b);
+  }, true);
+  return { open, close, pickItem, norm, match, hl, rank, get abierto(){ return !!PK; } };
+})();
+
+/* ================= Navegación principal (barra lateral) ================= */
+const Shell = (function(){
+  const KEY = 'nuna-shell-v1';
+  let cur = null;
+  const last = () => { try{ return localStorage.getItem(KEY) || 'av:ped'; }catch(e){ return 'av:ped'; } };
+  function mark(k){ document.querySelectorAll('#nav [data-go]').forEach(b => b.setAttribute('aria-current', String(b.dataset.go===k))); }
+  async function go(k){
+    const [mod, v] = k.split(':');
+    if(!document.querySelector(`#nav [data-go="${k}"]`)) return go('av:ped');
+    if(cur && cur.indexOf('av:')===0 && typeof avPuedeSalir==='function' && !(await avPuedeSalir())) return;
+    try{ localStorage.setItem(KEY, k); }catch(e){}
+    cur = k; mark(k);
+    document.getElementById('avRoot').hidden = mod!=='av';
+    document.getElementById('ctRoot').hidden = mod!=='ct';
+    try{ if(mod==='av') await nav(v); else { await cargarCombos(); await CT.show(v); } }
+    catch(err){ error(mod, err); }
+    window.scrollTo(0,0);
+  }
+  /** Combos se descarga del servidor la primera vez que se entra (CSS + 4 partes de JS). */
+  let pCombos = null;
+  function cargarCombos(){
+    if(typeof CT !== 'undefined') return Promise.resolve();
+    if(pCombos) return pCombos;
+    const c = document.getElementById('content'); if(c) c.innerHTML = '<div class="empty">Cargando módulo Combos…</div>';
+    pCombos = new Promise((ok, ko) => google.script.run
+      .withSuccessHandler(r => {
+        try{
+          const st = document.createElement('style'); st.textContent = r.css; document.head.appendChild(st);
+          /* cada parte llega en base64: se decodifica (UTF-8), se verifica el tamaño y recién se ejecuta */
+          const codigo = r.js.map((b64, i) => {
+            const bin = atob(b64), u8 = new Uint8Array(bin.length);
+            for(let k = 0; k < bin.length; k++) u8[k] = bin.charCodeAt(k);
+            if(u8.length !== r.bytes[i]) throw new Error('CodigoCombos' + (i+1) + '.gs llegó incompleto (' + u8.length + ' de ' + r.bytes[i] + ' bytes). Vuelve a pegarlo completo.');
+            return new TextDecoder('utf-8').decode(u8);
+          });
+          codigo.forEach((code, i) => { const s = document.createElement('script'); s.textContent = code + '\n//# sourceURL=CodigoCombos' + (i+1) + '.js'; document.body.appendChild(s); });
+          if(typeof CT === 'undefined') throw new Error('El código de Combos llegó pero no se pudo ejecutar.');
+          ok();
+        }catch(e){ pCombos = null; ko(e); }
+      })
+      .withFailureHandler(e => { pCombos = null; ko(e); })
+      .getCodigoCombos());
+    return pCombos;
+  }
+  /** Muestra el error dentro de la sección (antes quedaba oculto y la app parecía no responder). */
+  function error(mod, err){
+    const box = document.getElementById(mod==='av' ? 'app' : 'content');
+    const partes = window.__ctPartes || 0, carga = (window.__boot.errs || []).join(' | ');
+    const msg = (typeof CT==='undefined' ? 'El módulo Combos no cargó. ' + (carga ? 'Error al cargar: ' + carga + '. ' : '') : '') + String(err && err.message || err), pila = String(err && err.stack || '').split('\n').slice(0,4).join('\n');
+    if(box) box.innerHTML = `<div class="panel" style="padding:18px 20px;margin:16px;border:1px solid #B3261E;border-radius:10px;background:#fff">
+      <b style="color:#B3261E">No se pudo abrir esta sección</b><p style="margin:8px 0">${msg.replace(/</g,'&lt;')}</p>
+      <pre style="font-size:11px;white-space:pre-wrap;color:#46566C;margin:0">${pila.replace(/</g,'&lt;')}</pre>
+      <p style="font-size:12px;color:#46566C;margin:10px 0 0">Envía una captura de este recuadro para corregirlo.</p></div>`;
+    if(typeof toast==='function') toast('Error: ' + msg, true);
+  }
+  document.addEventListener('click', ev => {
+    const b = ev.target.closest('[data-go]');
+    if(b && b.closest('#nav')){ ev.preventDefault(); go(b.dataset.go); return; }
+    if(ev.target.closest('#togNav')){ document.getElementById('shell').classList.toggle('navc'); try{ localStorage.setItem(KEY+'-nav', document.getElementById('shell').classList.contains('navc')?'1':''); }catch(e){} setTimeout(()=>window.dispatchEvent(new Event('resize'))); }
+  });
+  window.addEventListener('unhandledrejection', ev => { const r = ev.reason; if(typeof toast==='function') toast('Error: ' + (r && r.message || r), true); });
+  try{ if(localStorage.getItem(KEY+'-nav')==='1') document.getElementById('shell').classList.add('navc'); }catch(e){}
+  /** Estado del guardado automático de Combos (cabecera). */
+  function sync(txt, cls){ const s = document.getElementById('sync'); if(s){ s.textContent = txt || ''; s.className = 'sync ' + (cls||''); } }
+  return { go, mark, last, sync, get cur(){ return cur; } };
+})();
+</script>
