@@ -2,6 +2,7 @@
 // que sí ve todos los archivos de src/ juntos como Apps Script; ESLint analiza archivo por archivo.
 const js = require('@eslint/js');
 const globals = require('globals');
+const html = require('eslint-plugin-html');
 
 const comunes = {
   'no-undef': 'off',
@@ -21,6 +22,13 @@ module.exports = [
   },
   {
     files: ['src_combos/**/*.js', 'app.js'],
+    languageOptions: { ecmaVersion: 2022, sourceType: 'script', globals: { ...globals.browser, google: 'readonly' } },
+    rules: comunes,
+  },
+  {
+    // JS de cliente dentro de los .html de Apps Script (JsAvios, JsComun) y del Hub Comercial
+    files: ['src/**/*.html', '*.html'],
+    plugins: { html },
     languageOptions: { ecmaVersion: 2022, sourceType: 'script', globals: { ...globals.browser, google: 'readonly' } },
     rules: comunes,
   },
