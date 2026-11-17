@@ -10,7 +10,8 @@
  *
  * Stock por SKU (ID.AVIO):
  *   Stock actual  = CARGA INICIAL + INGRESO − SALIDA
- *   Stock reserva = Σ por PE de max(0, RESERVA − LIBERA − SALIDA)
+ *   Stock reserva = Σ por PE del pendiente de reserva, en orden del kardex: RESERVA suma; LIBERA y SALIDA
+ *                   restan sin bajar de 0 (una salida previa sin reserva no anula reservas posteriores)
  *   Disponible    = Stock actual − Stock reserva
  * Las tallas no se crean aquí: se leen de PLAN DE VENTAS › TALLA.
  */
@@ -123,7 +124,7 @@ function movData_() {
 function lock_(fn) {
   const l = LockService.getScriptLock();
   l.waitLock(20000);
-  try { return fn(); } finally { l.releaseLock(); }
+  try { return fn(); } finally { SpreadsheetApp.flush(); l.releaseLock(); } // flush: la siguiente ejecución debe ver lo escrito
 }
 function driveId_(v) {
   v = str_(v);
@@ -347,15 +348,16 @@ function stock_(pe, mv) {
     if (tipo === 'INGRESO') it.ing += q;
     if (tipo === 'SALIDA') it.sal += q;
     if (p && (tipo === 'RESERVA' || tipo === 'LIBERA' || tipo === 'SALIDA')) {
-      const k = p + '|' + item, o = pk[k] || (pk[k] = { res: 0, lib: 0, sal: 0 });
-      if (tipo === 'RESERVA') o.res += q;
-      if (tipo === 'LIBERA') o.lib += q;
+      /* Cronológico (el kardex está en orden de registro): la salida consume solo lo reservado hasta ese momento. */
+      const k = p + '|' + item, o = pk[k] || (pk[k] = { pend: 0, sal: 0 });
+      if (tipo === 'RESERVA') o.pend = r2_(o.pend + q);
+      else o.pend = Math.max(0, r2_(o.pend - q));
       if (tipo === 'SALIDA') o.sal += q;
     }
   });
   Object.keys(pk).forEach(k => {
     const i = k.indexOf('|'), p = k.slice(0, i), item = k.slice(i + 1), o = pk[k];
-    const pend = Math.max(0, o.res - o.lib - o.sal);
+    const pend = o.pend;
     items[item].res += pend;
     if (p === pe) { items[item].resPE = r2_(pend); items[item].salPE = r2_(o.sal); }
   });
@@ -365,6 +367,27 @@ function stock_(pe, mv) {
     it.act = r2_(it.ini + it.ing - it.sal); it.disp = r2_(it.act - it.res);
   });
   return items;
+}
+/**
+ * Solo lectura. Ejecutar desde el editor: compara la reserva pendiente por PE|SKU con la fórmula anterior
+ * (max(0, RESERVA − LIBERA − SALIDA) sobre totales) y lista dónde difiere: reservas "fantasma" que antes no contaban.
+ */
+function diagnosticoReservas() {
+  const mv = movData_(), pk = {};
+  mv.forEach(r => {
+    const tipo = str_(r[2]), item = up_(r[4]), q = Number(r[6]) || 0, p = up_(r[8]);
+    if (!item || !p || ['RESERVA', 'LIBERA', 'SALIDA'].indexOf(tipo) < 0) return;
+    const o = pk[p + '|' + item] || (pk[p + '|' + item] = { res: 0, lib: 0, sal: 0, pend: 0 });
+    if (tipo === 'RESERVA') { o.res += q; o.pend = r2_(o.pend + q); }
+    else { o.pend = Math.max(0, r2_(o.pend - q)); if (tipo === 'LIBERA') o.lib += q; else o.sal += q; }
+  });
+  const dif = Object.keys(pk).map(k => {
+    const o = pk[k], antes = r2_(Math.max(0, o.res - o.lib - o.sal));
+    return { pe: k.split('|')[0], item: k.split('|')[1], antes: antes, ahora: o.pend, diferencia: r2_(o.pend - antes) };
+  }).filter(d => Math.abs(d.diferencia) > 1e-9);
+  Logger.log('PE|SKU revisados: ' + Object.keys(pk).length + ' · con diferencia: ' + dif.length);
+  dif.forEach(d => Logger.log(d.pe + ' · ' + d.item + ': antes ' + d.antes + ' → ahora ' + d.ahora + ' (' + (d.diferencia > 0 ? '+' : '') + d.diferencia + ')'));
+  return dif;
 }
 function nextDoc_(prefix, mv) {
   let max = 0;
@@ -447,24 +470,47 @@ function buscarPedido(pe) {
   if (!plan.estilos.length) throw new Error(pe + ' no tiene estilos en DETALLE PEDIDOS (col B).');
   const codes = {};
   plan.estilos.forEach(s => codes[s.c] = 1);
-  const bom = {};
-  filasPorClave_(sheet_(SH.BOM), 2, pe, 7, 2).forEach(r => { if (codes[str_(r[0])]) bom[str_(r[0])] = JSON.parse(str_(r[3]) || '[]'); });
-  return { pe: pe, cli: plan.cli, marca: plan.marca, status: plan.status, cad: plan.cad, estilos: plan.estilos, bom: bom, stock: stock_(pe) };
+  const bom = {}, bomVer = {};
+  filasPorClave_(sheet_(SH.BOM), 2, pe, 7, 2).forEach(r => {
+    const mod = str_(r[0]);
+    bomVer[mod] = verBOM_(r[5]);
+    if (codes[mod]) bom[mod] = JSON.parse(str_(r[3]) || '[]');
+  });
+  return { pe: pe, cli: plan.cli, marca: plan.marca, status: plan.status, cad: plan.cad, estilos: plan.estilos, bom: bom, bomVer: bomVer, stock: stock_(pe) };
+}
+
+/** Versión de un BOM = su "Actualizado" en segundos (lo que se lee de la hoja, no de memoria). */
+const verBOM_ = d => d instanceof Date ? Math.round(d.getTime() / 1000) : 0; // round: Sheets puede devolver 11:59:59.999 por 12:00:00
+/**
+ * Antes de escribir: el cliente manda en meta.bomVer las versiones de los BOM del PE con que armó `lines`.
+ * Si otro usuario guardó algún BOM del pedido después, se rechaza: con `lines` viejas se liberarían reservas ajenas.
+ */
+function verificarBOM_(pe, meta) {
+  const ver = meta && meta.bomVer;
+  if (!ver) throw new Error('La página está desactualizada: recárgala antes de continuar. No se grabó nada.');
+  const cambiados = [];
+  filasPorClave_(sheet_(SH.BOM), 2, up_(pe), 7, 2).forEach(r => {
+    const mod = str_(r[0]);
+    if ((Number(ver[mod]) || 0) !== verBOM_(r[5])) cambiados.push(mod + ' (' + (str_(r[6]) || 'otro usuario') + ', ' + fdate_(r[5]) + ')');
+  });
+  if (cambiados.length) throw new Error('Otro usuario modificó el BOM de ' + cambiados.join(', ') + ' después de que abriste ' + up_(pe) + '. Recarga el pedido; no se grabó nada.');
 }
 
 /** Guarda el BOM del estilo; si recibe meta y lines, en la misma llamada libera excedentes y actualiza el estado del pedido. */
 function guardarBOM(pe, modelo, molde, rows, meta, lines) {
   return lock_(() => {
-    const s = sheet_(SH.BOM);
-    const row = [modelo, pe, molde, JSON.stringify(rows), rows.length, new Date(), usr_()];
+    verificarBOM_(pe, meta);
+    const s = sheet_(SH.BOM), ahora = new Date();
+    ahora.setMilliseconds(0); // la versión se compara en segundos
+    const row = [modelo, pe, molde, JSON.stringify(rows), rows.length, ahora, usr_()];
     const f = filaPorClave_(s, 1, modelo, 2);
     if (f > 0) s.getRange(f, 1, 1, row.length).setValues([row]);
     else append_(SH.BOM, [row]);
-    if (!meta || !lines) return true;
+    if (!lines) return { ver: verBOM_(ahora) };
     lines.forEach(l => l.item = up_(l.item));
     let mv = movData_();
     const lib = ajustarReservas_(pe, lines, mv); mv = mv.concat(lib);
-    const e = estado_(pe, meta, lines, mv); e.liberadas = lib.length;
+    const e = estado_(pe, meta, lines, mv); e.liberadas = lib.length; e.ver = verBOM_(ahora);
     return e;
   });
 }
@@ -522,6 +568,7 @@ function reservar(pe, meta, lines) {
   exigirAbierto_(pe);
   lines.forEach(l => l.item = up_(l.item));
   return lock_(() => {
+    verificarBOM_(pe, meta);
     let mv = movData_();
     mv = mv.concat(ajustarReservas_(pe, lines, mv));
     const st = stock_(pe, mv), ent = enteraMap_(), doc = nextDoc_('RES', mv), out = [];
@@ -539,6 +586,7 @@ function reservar(pe, meta, lines) {
 }
 function liberar(pe, meta, lines) {
   return lock_(() => {
+    verificarBOM_(pe, meta);
     const mv = movData_(), st = stock_(pe, mv), doc = nextDoc_('LIB', mv), out = [];
     Object.keys(st).forEach(k => { const s = st[k]; if (s.resPE > 0) out.push(mov_('LIBERA', doc, s, s.resPE, pe, '', 'Liberación de reserva')); });
     append_(SH.MOV, out);
@@ -550,6 +598,7 @@ function liberar(pe, meta, lines) {
 function generarSalida(pe, meta, lines, salida, destino, obs) {
   exigirAbierto_(pe);
   return lock_(() => {
+    verificarBOM_(pe, meta);
     const mv = movData_(), st = stock_(pe, mv), ent = enteraMap_(), doc = nextDoc_('SAL', mv), out = [], req = {};
     lines.forEach(l => req[up_(l.item)] = Number(l.req) || 0);
     salida.forEach(l => {

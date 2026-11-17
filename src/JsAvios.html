@@ -227,7 +227,7 @@ function faltantesDe(st, r){
   return calc(st,r).missing.filter(m=>m.tc).map(m=>({cod:r.cod, mar:ref.mar, med:ref.med, col:ref.col||"", coln:ref.coln||"", tal:m.tc, tn:m.tn}));
 }
 function faltantesPE(){ const out = []; P.estilos.forEach(s=>(P.bom[s.c]||[]).forEach(r=>faltantesDe(s,r).forEach(m=>out.push({...m, estilo:s.c})))); return out; }
-const meta = () => ({cliente:P.cli, marca:P.marca, estilos:P.estilos.length, conBom:P.estilos.filter(s=>saved(s.c)).length});
+const meta = () => ({cliente:P.cli, marca:P.marca, estilos:P.estilos.length, conBom:P.estilos.filter(s=>saved(s.c)).length, bomVer:P.bomVer||{}}); /* bomVer: el servidor rechaza si otro usuario cambió un BOM del PE */
 const sendLines = () => lineasPE().map(l=>({item:l.item, base:l.base, und:l.und, req:l.req}));
 const stk = item => (P.stock[item] || {ini:0,ing:0,sal:0,act:0,res:0,disp:0,resPE:0,salPE:0});
 
@@ -1083,7 +1083,7 @@ document.addEventListener("click", async e=>{
     P.saved[st.c] = JSON.stringify(rows); LPC = null;
     let r;
     try { r = await run("guardarBOM", P.pe, st.c, st.m, rows, meta(), sendLines()); } catch(err){ P.saved[st.c] = prev; return; }
-    mergePed(r.ped); P.stock = r.stock;
+    (P.bomVer = P.bomVer || {})[st.c] = r.ver; mergePed(r.ped); P.stock = r.stock;
     const falt = P.bom[st.c].reduce((a,x)=>a+calc(st,x).missing.length,0);
     render(); return toast("BOM de " + st.c + " guardado." + (falt ? " Ojo: " + falt + " tallas sin SKU." : "") + (r.liberadas ? " Se liberó reserva sobrante." : ""));
   }
