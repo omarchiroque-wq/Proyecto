@@ -1,0 +1,4 @@
+node_modules/
+.claude/
+src/CodigoCombos*.js
+skills-lock.json

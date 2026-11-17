@@ -1,0 +1,14 @@
+{
+  // Chequeo de tipos del JS de Combos: corre en el navegador (DOM), no en el servidor GAS.
+  "compilerOptions": {
+    "checkJs": true,
+    "allowJs": true,
+    "noEmit": true,
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "types": [],
+    "strict": false,
+    "skipLibCheck": true
+  },
+  "include": ["combos.js"]
+}

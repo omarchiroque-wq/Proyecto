@@ -1,0 +1,31 @@
+{
+  "name": "nuna-consumos-avios",
+  "version": "1.0.0",
+  "description": "NUNA COTTON · Consumos y Avíos (Apps Script)",
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc -p jsconfig.json && tsc -p src_combos/jsconfig.json",
+    "format:check": "prettier --check .",
+    "build:combos": "./build-combos.sh",
+    "push": "./build-combos.sh --check && clasp push"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omarchiroque-wq/Proyecto.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/omarchiroque-wq/Proyecto/issues"
+  },
+  "homepage": "https://github.com/omarchiroque-wq/Proyecto#readme",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/google-apps-script": "^2.0.15",
+    "eslint": "^10.15.0",
+    "globals": "^17.14.0",
+    "prettier": "^3.10.1",
+    "typescript": "^7.0.2"
+  },
+  "private": true
+}

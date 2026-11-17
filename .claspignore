@@ -1,0 +1,11 @@
+# .claspignore REEMPLAZA las reglas por defecto de clasp: se repiten aquí.
+# Rutas relativas a rootDir (src/).
+**/**
+!**/appsscript.json
+!**/*.gs
+!**/*.js
+!**/*.ts
+!**/*.html
+.git/**
+node_modules/**
+**/node_modules/**

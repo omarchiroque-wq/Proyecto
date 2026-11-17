@@ -1,0 +1,15 @@
+{
+  // Chequeo de tipos del backend Apps Script (V8). Todos los .js de src/ comparten scope global, como en GAS.
+  "compilerOptions": {
+    "checkJs": true,
+    "allowJs": true,
+    "noEmit": true,
+    "target": "ES2020",
+    "lib": ["ES2020"],
+    "types": ["google-apps-script"],
+    "strict": false,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.js"],
+  "exclude": ["node_modules", "src_combos"]
+}
